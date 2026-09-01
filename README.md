@@ -4,7 +4,7 @@ Reusable Terraform modules for Cloudflare infrastructure.
 
 ## Provider
 
-All modules target the Cloudflare v5 provider:
+All modules are written for the Cloudflare v5 provider schema. Pin the major in your root configuration, since seven modules only require `>= 5.0`:
 
 ```hcl
 terraform {
@@ -60,10 +60,11 @@ source = "git::https://github.com/o2csi/terraform-cloudflare-modules.git//module
 
 ## Conventions
 
-- **Module structure** — each module has: `main.tf`, `variables.tf`, `outputs.tf`, `versions.tf` (some legacy modules still inline vars/outputs in main.tf — will be normalized)
+- **Module structure** — each module has: `main.tf`, `variables.tf`, `outputs.tf`, `versions.tf`, `README.md`
 - **Placeholder content** — Worker content is deployed via `wrangler`, not Terraform. Modules use a placeholder and ignore content drift via `lifecycle.ignore_changes`
 - **Bindings** — passed as maps/lists of objects for flexibility (CF v5 unified bindings schema)
 - **Route creation** — `route_pattern = ""` disables route creation in cf-worker-full
+- **Checks** — `scripts/check-modules.sh` validates the layout, the descriptions, every module and every README example in a temporary copy; run it before pushing.
 
 ## Versioning
 
