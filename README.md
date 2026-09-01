@@ -60,7 +60,7 @@ source = "git::https://github.com/o2csi/terraform-cloudflare-modules.git//module
 
 ## Conventions
 
-- **Module structure** — each module has: `main.tf`, `variables.tf`, `outputs.tf`, `versions.tf` (some legacy modules still inline vars/outputs in main.tf — will be normalized)
+- **Module structure** — each module has: `main.tf`, `variables.tf`, `outputs.tf`, `versions.tf`, `README.md`
 - **Placeholder content** — Worker content is deployed via `wrangler`, not Terraform. Modules use a placeholder and ignore content drift via `lifecycle.ignore_changes`
 - **Bindings** — passed as maps/lists of objects for flexibility (CF v5 unified bindings schema)
 - **Route creation** — `route_pattern = ""` disables route creation in cf-worker-full
