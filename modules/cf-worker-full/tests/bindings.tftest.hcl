@@ -105,6 +105,16 @@ run "rejects_duplicate_secret_names" {
   expect_failures = [cloudflare_workers_script.this]
 }
 
+run "rejects_duplicate_empty_secret_names" {
+  command = plan
+
+  variables {
+    secret_names = ["", ""]
+  }
+
+  expect_failures = [cloudflare_workers_script.this]
+}
+
 run "accepts_distinct_binding_names" {
   command = plan
 

@@ -20,6 +20,19 @@ run "rejects_duplicate_service_binding" {
   expect_failures = [var.service_bindings]
 }
 
+run "rejects_duplicate_empty_service_binding_name" {
+  command = plan
+
+  variables {
+    service_bindings = [
+      { name = "", service = "example-worker-one" },
+      { name = "", service = "example-worker-two" },
+    ]
+  }
+
+  expect_failures = [var.service_bindings]
+}
+
 run "accepts_distinct_service_bindings" {
   command = plan
 

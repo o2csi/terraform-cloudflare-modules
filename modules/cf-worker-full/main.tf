@@ -115,7 +115,7 @@ resource "cloudflare_workers_script" "this" {
 
     precondition {
       condition     = length(local.all_bindings[*].name) == length(distinct(local.all_bindings[*].name))
-      error_message = "Binding names must be unique across every binding category: ${join(", ", [for n in distinct(local.all_bindings[*].name) : n if length([for m in local.all_bindings[*].name : m if m == n]) > 1])}."
+      error_message = "Binding names must be unique across every binding category: ${jsonencode([for n in distinct(local.all_bindings[*].name) : n if length([for m in local.all_bindings[*].name : m if m == n]) > 1])}."
     }
   }
 }

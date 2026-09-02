@@ -95,6 +95,16 @@ run "rejects_database_slash" {
   expect_failures = [var.origin_database_url]
 }
 
+run "rejects_database_colon" {
+  command = plan
+
+  variables {
+    origin_database_url = "postgres://u:pass@h:5432/db:name"
+  }
+
+  expect_failures = [var.origin_database_url]
+}
+
 run "rejects_mysql_scheme" {
   command = plan
 
