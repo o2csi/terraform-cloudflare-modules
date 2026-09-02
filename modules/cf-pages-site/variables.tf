@@ -44,4 +44,9 @@ variable "service_bindings" {
     entrypoint = optional(string, "default")
   }))
   default = []
+
+  validation {
+    condition     = length(var.service_bindings[*].name) == length(distinct(var.service_bindings[*].name))
+    error_message = "Service binding names must be unique: ${jsonencode([for n in distinct(var.service_bindings[*].name) : n if length([for m in var.service_bindings[*].name : m if m == n]) > 1])}."
+  }
 }

@@ -2,8 +2,8 @@
 # This check accepts a fixed shape: top-level blocks begin at column 0 (enforced by tofu fmt -check);
 # no heredoc; no block comment in variables.tf or outputs.tf; no line-leading block comment in a README
 # example. Each module README has exactly one fenced block, and that block is hcl.
-# Assertions 5 and 6 run tofu init and tofu validate, which download and start the providers the
-# checkout names (seven modules constrained >= 5.0 resolve the newest release); run this on a checkout you would run tofu on.
+# Assertions 5 and 6 run tofu init and tofu validate, and assertion 5 also runs tests; these download and start the providers the
+# checkout names (the ten modules constrained ~> 5.0 resolve a 5.x release: the newest allowed one on a clean checkout, or the locked one where a .terraform.lock.hcl is staged; see #6); run this on a checkout you would run tofu on.
 set -euo pipefail
 
 script_path=$(readlink -f "${BASH_SOURCE[0]}") || { printf 'check-modules.sh: cannot resolve the script path\n' >&2; exit 1; }
@@ -181,6 +181,9 @@ for module_dir in "${module_dirs[@]}"; do
   fi
   if ! tofu -chdir="${staged_module}" validate -no-color; then
     fail "assertion 5: ${module} validate failed"
+  fi
+  if ! tofu -chdir="${staged_module}" test -no-color; then
+    fail "assertion 5: ${module} tests failed"
   fi
 done
 

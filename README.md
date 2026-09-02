@@ -4,7 +4,7 @@ Reusable Terraform modules for Cloudflare infrastructure.
 
 ## Provider
 
-All modules are written for the Cloudflare v5 provider schema. Pin the major in your root configuration, since seven modules only require `>= 5.0`:
+All modules are written for the Cloudflare v5 provider schema and pin `~> 5.0`:
 
 ```hcl
 terraform {
@@ -38,7 +38,7 @@ Reference modules via git source in your Terraform configuration:
 
 ```hcl
 module "my_worker" {
-  source = "git::https://github.com/o2csi/terraform-cloudflare-modules.git//modules/cf-worker-full?ref=v0.2.0"
+  source = "git::https://github.com/o2csi/terraform-cloudflare-modules.git//modules/cf-worker-full?ref=v0.3.0"
 
   account_id    = var.cloudflare_account_id
   worker_name   = "example-worker"
@@ -55,7 +55,7 @@ module "my_worker" {
 Pin to a specific version once tags are released:
 
 ```hcl
-source = "git::https://github.com/o2csi/terraform-cloudflare-modules.git//modules/cf-worker-full?ref=v0.2.0"
+source = "git::https://github.com/o2csi/terraform-cloudflare-modules.git//modules/cf-worker-full?ref=v0.3.0"
 ```
 
 ## Conventions

@@ -7,7 +7,7 @@ The resource has `lifecycle.ignore_changes = [read_replication]`, so Cloudflare-
 ```hcl
 # This configuration uses illustrative values. Replace them before applying.
 module "d1" {
-  source = "git::https://github.com/o2csi/terraform-cloudflare-modules.git//modules/cf-d1?ref=v0.2.0"
+  source = "git::https://github.com/o2csi/terraform-cloudflare-modules.git//modules/cf-d1?ref=v0.3.0"
 
   account_id            = "0123456789abcdef0123456789abcdef"
   name                  = "example-database"

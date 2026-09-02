@@ -7,7 +7,7 @@ The module returns the token `id` and its sensitive `value`.
 ```hcl
 # This configuration uses illustrative values. Replace them before applying.
 module "scoped_token" {
-  source = "git::https://github.com/o2csi/terraform-cloudflare-modules.git//modules/cf-scoped-token?ref=v0.2.0"
+  source = "git::https://github.com/o2csi/terraform-cloudflare-modules.git//modules/cf-scoped-token?ref=v0.3.0"
 
   name = "example-deploy-token"
   policies = [

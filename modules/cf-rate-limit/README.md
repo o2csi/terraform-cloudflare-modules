@@ -5,7 +5,7 @@ Creates a zone-scoped `cloudflare_ruleset` in the `http_ratelimit` phase for the
 ```hcl
 # This configuration uses illustrative values. Replace them before applying.
 module "rate_limit" {
-  source = "git::https://github.com/o2csi/terraform-cloudflare-modules.git//modules/cf-rate-limit?ref=v0.2.0"
+  source = "git::https://github.com/o2csi/terraform-cloudflare-modules.git//modules/cf-rate-limit?ref=v0.3.0"
 
   zone_id      = "0123456789abcdef0123456789abcdef"
   ruleset_name = "example-rate-limit"
