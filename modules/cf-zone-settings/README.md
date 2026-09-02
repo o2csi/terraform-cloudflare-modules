@@ -7,7 +7,7 @@ The `zero_rtt` resource uses `setting_id = "0rtt"`, and the `security_header` re
 ```hcl
 # This configuration uses illustrative values. Replace them before applying.
 module "zone_settings" {
-  source = "git::https://github.com/o2csi/terraform-cloudflare-modules.git//modules/cf-zone-settings?ref=v0.2.0"
+  source = "git::https://github.com/o2csi/terraform-cloudflare-modules.git//modules/cf-zone-settings?ref=v0.3.0"
 
   zone_id = "0123456789abcdef0123456789abcdef"
 }

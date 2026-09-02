@@ -7,7 +7,7 @@ The default `ttl` is `1` and the default `proxied` value is `true`; callers can 
 ```hcl
 # This configuration uses illustrative values. Replace them before applying.
 module "dns_record" {
-  source = "git::https://github.com/o2csi/terraform-cloudflare-modules.git//modules/cf-dns-record?ref=v0.2.0"
+  source = "git::https://github.com/o2csi/terraform-cloudflare-modules.git//modules/cf-dns-record?ref=v0.3.0"
 
   zone_id = "0123456789abcdef0123456789abcdef"
   name    = "api.example.invalid"

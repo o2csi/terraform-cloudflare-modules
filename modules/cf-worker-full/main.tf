@@ -112,6 +112,11 @@ resource "cloudflare_workers_script" "this" {
       compatibility_flags,
       bindings,
     ]
+
+    precondition {
+      condition     = length(local.all_bindings[*].name) == length(distinct(local.all_bindings[*].name))
+      error_message = "Binding names must be unique across every binding category: ${join(", ", [for n in distinct(local.all_bindings[*].name) : n if length([for m in local.all_bindings[*].name : m if m == n]) > 1])}."
+    }
   }
 }
 
