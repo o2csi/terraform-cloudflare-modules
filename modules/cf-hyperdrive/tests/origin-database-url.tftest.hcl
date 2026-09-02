@@ -105,11 +105,39 @@ run "rejects_mysql_scheme" {
   expect_failures = [var.origin_database_url]
 }
 
+run "rejects_port_zero" {
+  command = plan
+
+  variables {
+    origin_database_url = "postgres://u:pass@h:0/db"
+  }
+
+  expect_failures = [var.origin_database_url]
+}
+
+run "rejects_port_above_65535" {
+  command = plan
+
+  variables {
+    origin_database_url = "postgres://u:pass@h:65536/db"
+  }
+
+  expect_failures = [var.origin_database_url]
+}
+
 run "accepts_canonical_url" {
   command = plan
 
   variables {
     origin_database_url = "postgresql://example_user:example_password@db.example.invalid:5432/example_database"
+  }
+}
+
+run "accepts_port_65535" {
+  command = plan
+
+  variables {
+    origin_database_url = "postgres://u:pass@h:65535/db"
   }
 }
 
