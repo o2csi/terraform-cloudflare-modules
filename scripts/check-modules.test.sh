@@ -885,6 +885,8 @@ case_control_bytes_test_filename() {
   status=$(run_check control-bytes-test-filename shim)
   assert_status control-bytes-test-filename "${status}" 1
   assert_safe_log control-bytes-test-filename
+  assert_log_has control-bytes-test-filename 'is a JSON test file'
+  assert_no_shim control-bytes-test-filename
   printf 'ok control-bytes-test-filename\n'
 }
 
@@ -897,6 +899,8 @@ case_tab_in_test_filename() {
   status=$(run_check tab-in-test-filename shim)
   assert_status tab-in-test-filename "${status}" 1
   assert_safe_log tab-in-test-filename
+  assert_log_has tab-in-test-filename 'is a JSON test file'
+  assert_no_shim tab-in-test-filename
   printf 'ok tab-in-test-filename\n'
 }
 
@@ -924,6 +928,8 @@ case_newline_in_test_filename() {
   fi
   [[ "${log_lines}" -eq 1 ]] || fail_case newline-in-test-filename "expected one log line, got ${log_lines}"
   assert_safe_log newline-in-test-filename
+  assert_log_has newline-in-test-filename 'is a JSON test file'
+  assert_no_shim newline-in-test-filename
   printf 'ok newline-in-test-filename\n'
 }
 
@@ -963,8 +969,9 @@ case_undocumented_block_name() {
   git -C "${case_dir}" add -A
   status=$(run_check undocumented-block-name shim)
   assert_status undocumented-block-name "${status}" 1
-  assert_log_has undocumented-block-name 'block lacks a description'
   assert_safe_log undocumented-block-name
+  assert_log_matches undocumented-block-name 'line [0-9]+'
+  assert_log_has undocumented-block-name 'an interface header is exactly variable "<name>" { or output "<name>" { with an ASCII identifier'
   assert_no_shim undocumented-block-name
   printf 'ok undocumented-block-name\n'
 }
