@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # This check accepts a fixed shape: module and run headers and their closing lines begin at column 0 (other blocks
 # are not parsed); the token sequences << and /* are refused anywhere in variables.tf and outputs.tf, and outside
-# double-quoted strings in a README example and a test file; a closing line is exactly } at column 0 (a lexical
-# convention, nesting is not parsed); README
+# double-quoted strings in a README example and a test file; a tracked module or run block ends at the next line that
+# is exactly } at column 0; the scanner does not attribute braces, so a block whose own closing brace is indented and
+# that is followed by another top-level block is not detected; README
 # fences begin at column 0; each module README has one hcl fence and one module block; a line starting with module
 # in an example, or run in a test file, is exactly module "<name>" { / run "<name>" {, does not arrive while a block
 # is open, and every block closes before end of file; a run block carries command = plan; JSON test files are refused;
@@ -124,6 +125,10 @@ trap cleanup EXIT
 tmp_dir=$(mktemp -d) || fail "could not create a temporary directory"
 canonical_tmp_dir=$(readlink -f -- "${tmp_dir}") || fail "could not canonicalize the temporary directory"
 tmp_dir=${canonical_tmp_dir}
+TF_PLUGIN_CACHE_DIR="${TF_PLUGIN_CACHE_DIR:-${tmp_dir}/plugin-cache}"
+mkdir -p -- "${TF_PLUGIN_CACHE_DIR}" || fail "could not create TF_PLUGIN_CACHE_DIR: ${TF_PLUGIN_CACHE_DIR}"
+TF_PLUGIN_CACHE_DIR=$(readlink -f -- "${TF_PLUGIN_CACHE_DIR}") || fail "could not canonicalize TF_PLUGIN_CACHE_DIR"
+export TF_PLUGIN_CACHE_DIR
 
 # The export lives in ${tmp_dir}/index; generated examples and the cache are siblings, then the check cd's into it.
 index_dir="${tmp_dir}/index"
@@ -278,8 +283,8 @@ for module_dir in "${module_dirs[@]}"; do
   example_dir="${tmp_dir}/examples/${module}"
   scan_err="${example_dir}/module.err"
   if source_line=$(run_scan module "${scan_err}" '
-    /^[[:space:]]*module[[:space:]]+"/ && in_module { outcome = "module-open"; exit }
-    /^[[:space:]]*module[[:space:]]+"/ && !/^module "[^"]+" \{$/ { outcome = "module-noncanonical:" $0; exit }
+    /^[[:space:]]*module[[:space:]]*"/ && in_module { outcome = "module-open"; exit }
+    /^[[:space:]]*module[[:space:]]*"/ && !/^module "[^"]+" \{$/ { outcome = "module-noncanonical:" substr($0, 1, 200) (length($0) > 200 ? "..." : ""); exit }
     /^module "[^"]+" \{$/ { module_count++; in_module = 1; next }
     in_module && /^\}$/ { in_module = 0; next }
     in_module && /^[[:space:]]*source[[:space:]]*=[[:space:]]*"git::https:\/\/github.com\/o2csi\/terraform-cloudflare-modules\.git\/\/modules\/[a-z0-9-]+\?ref=[^"]+"[[:space:]]*$/ {
@@ -329,7 +334,16 @@ for module_dir in "${module_dirs[@]}"; do
   source_module=${source_name_and_ref%%\?ref=*}
   source_ref=${source_name_and_ref#*\?ref=}
   [[ "${source_module}" == "${module}" && -n "${source_ref}" ]] || fail "assertion 6: ${module} README has no module source ending in //modules/${module}?ref=<something>\""
-  [[ "${source_ref}" =~ ^[A-Za-z0-9._/][A-Za-z0-9._/-]*$ ]] && git check-ref-format --allow-onelevel "${source_ref}" >/dev/null 2>&1 || fail "assertion 6: ${module} README example ref is not a literal Git reference: ${source_ref}"
+  if [[ ! "${source_ref}" =~ ^[A-Za-z0-9._/][A-Za-z0-9._/-]*$ ]]; then
+    fail "assertion 6: ${module} README example ref is not a literal Git reference: ${source_ref:0:200}"
+  fi
+  if git check-ref-format --allow-onelevel "${source_ref}" >/dev/null 2>&1; then
+    :
+  else
+    ref_status=$?
+    [[ "${ref_status}" -eq 1 ]] && fail "assertion 6: ${module} README example ref is not a literal Git reference: ${source_ref:0:200}"
+    fail "could not validate the example ref of ${module} (git check-ref-format exit ${ref_status})"
+  fi
 done
 
 test_manifest="${tmp_dir}/test-files"
@@ -370,8 +384,8 @@ while IFS= read -r -d '' test_file; do
   fi
   scan_err="${tmp_dir}/run.err"
   if missing_run=$(run_scan run "${scan_err}" '
-    /^[[:space:]]*run[[:space:]]+"/ && in_run { outcome = "run-open:" run_name; exit }
-    /^[[:space:]]*run[[:space:]]+"/ && !/^run "[^"]+" \{$/ { outcome = "run-noncanonical:" $0; exit }
+    /^[[:space:]]*run[[:space:]]*"/ && in_run { outcome = "run-open:" run_name; exit }
+    /^[[:space:]]*run[[:space:]]*"/ && !/^run "[^"]+" \{$/ { outcome = "run-noncanonical:" substr($0, 1, 200) (length($0) > 200 ? "..." : ""); exit }
     /^run "[^"]+" \{$/ {
       in_run = 1
       run_name = $0
@@ -426,8 +440,6 @@ while IFS= read -r -d '' test_file; do
   fi
 done < "${test_manifest}"
 
-export TF_PLUGIN_CACHE_DIR="${TF_PLUGIN_CACHE_DIR:-${tmp_dir}/plugin-cache}"
-mkdir -p "${TF_PLUGIN_CACHE_DIR}" || fail "could not create TF_PLUGIN_CACHE_DIR: ${TF_PLUGIN_CACHE_DIR}"
 mkdir -p "${tmp_dir}/home" || fail "could not create temporary HOME: ${tmp_dir}/home"
 
 if ! run_tofu fmt -no-color -check -recursive modules; then

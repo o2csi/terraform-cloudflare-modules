@@ -23,7 +23,10 @@ base_fixture="${test_root}/base"
 logs_dir="${test_root}/logs"
 shim_dir="${test_root}/shim"
 real_path=${PATH}
-mkdir -p "${base_fixture}/scripts" "${base_fixture}/modules/cf-kv/tests" "${logs_dir}" "${shim_dir}"
+tofu_bin=$(readlink -f -- "$(command -v tofu)") || { printf 'FAIL: setup: cannot resolve tofu\n' >&2; exit 1; }
+cacheprobe_dir="${test_root}/cacheprobe"
+cacheprobe_log="${test_root}/relative-cache-probe"
+mkdir -p "${base_fixture}/scripts" "${base_fixture}/modules/cf-kv/tests" "${logs_dir}" "${shim_dir}" "${cacheprobe_dir}"
 
 check_modules_script=${CHECK_MODULES_SCRIPT:-scripts/check-modules.sh}
 cp -- "${check_modules_script}" "${base_fixture}/scripts/check-modules.sh"
@@ -54,6 +57,8 @@ printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" "$*" >> "${TF_PLUGIN_CACHE_D
 chmod +x "${shim_dir}/tofu"
 printf '%s\n' '#!/usr/bin/env bash' "env | grep -Ev '^(PWD|SHLVL|_)=' > \"\${TF_PLUGIN_CACHE_DIR:?}/shim.log\"" 'if [[ -f modules/cf-kv/main.tf ]]; then grep -c $'\''\r'\'' modules/cf-kv/main.tf || true; else printf "0\\n"; fi | sed "s/^/cr-count=/" > "${TF_PLUGIN_CACHE_DIR:?}/cr-count"' 'exit 97' > "${envshim_dir}/tofu"
 chmod +x "${envshim_dir}/tofu"
+printf '%s\n' '#!/usr/bin/env bash' "printf '%s\\n' \"\${TF_PLUGIN_CACHE_DIR:?}\" > '${cacheprobe_log}'" "exec '${tofu_bin}' \"\$@\"" > "${cacheprobe_dir}/tofu"
+chmod +x "${cacheprobe_dir}/tofu"
 
 shim_log() {
   printf '%s/cache/%s/shim.log' "${test_root}" "$1"
@@ -88,6 +93,8 @@ run_check() {
     if PATH="${envshim_dir}:${real_path}" TF_PLUGIN_CACHE_DIR="${cache_dir}" "${case_dir}/scripts/check-modules.sh" > "${logs_dir}/${case_name}.log" 2>&1; then status=0; else status=$?; fi
   elif [[ "${mode}" == relative ]]; then
     if PATH=".:${shim_dir}:${real_path}" TF_PLUGIN_CACHE_DIR="${cache_dir}" "${case_dir}/scripts/check-modules.sh" > "${logs_dir}/${case_name}.log" 2>&1; then status=0; else status=$?; fi
+  elif [[ "${mode}" == relative-cache ]]; then
+    if (cd -- "${case_dir}" && PATH="${cacheprobe_dir}:${real_path}" TF_PLUGIN_CACHE_DIR=relative-cache "${case_dir}/scripts/check-modules.sh") > "${logs_dir}/${case_name}.log" 2>&1; then status=0; else status=$?; fi
   else
     mkdir -p "${test_root}/plugin-cache"
     if PATH="${real_path}" TF_PLUGIN_CACHE_DIR="${test_root}/plugin-cache" "${case_dir}/scripts/check-modules.sh" > "${logs_dir}/${case_name}.log" 2>&1; then status=0; else status=$?; fi
@@ -99,22 +106,30 @@ assert_status() {
   [[ "$2" -eq "$3" ]] || fail_case "$1" "expected rc $3, got $2"
 }
 
+log_probe() {
+  local case_name=$1 status
+  shift
+  if grep "$@" "${logs_dir}/${case_name}.log"; then
+    return 0
+  else
+    status=$?
+  fi
+  [[ "${status}" -eq 1 ]] && return 1
+  fail_case "${case_name}" "could not read ${logs_dir}/${case_name}.log (grep exit ${status})"
+}
+
 assert_log_has() {
-  grep -Fq -- "$2" "${logs_dir}/$1.log" || fail_case "$1" "missing log substring: $2"
+  log_probe "$1" -Fq -- "$2" || fail_case "$1" "missing log substring: $2"
 }
 
 assert_log_lacks() {
-  local log="${logs_dir}/$1.log" status
-  if grep -Fq -- "$2" "${log}"; then
+  if log_probe "$1" -Fq -- "$2"; then
     fail_case "$1" "unexpected log substring: $2"
-  else
-    status=$?
-    [[ "${status}" -eq 1 ]] || fail_case "$1" "could not read ${log} (grep exit ${status})"
   fi
 }
 
 assert_log_matches() {
-  grep -Eq -- "$2" "${logs_dir}/$1.log" || fail_case "$1" "missing log pattern: $2"
+  log_probe "$1" -Eq -- "$2" || fail_case "$1" "missing log pattern: $2"
 }
 
 assert_no_shim() {
@@ -302,6 +317,21 @@ case_indented_module_header() {
   printf 'ok indented-module-header\n'
 }
 
+case_zero_space_module_header() {
+  local status
+  new_case zero-space-module-header
+  sed -i '/^```$/i\
+module"extra"{\
+  source = "./x"\
+}' "${case_dir}/modules/cf-kv/README.md"
+  git -C "${case_dir}" add -A
+  status=$(run_check zero-space-module-header shim)
+  assert_status zero-space-module-header "${status}" 1
+  assert_log_has zero-space-module-header 'non-canonical module header'
+  assert_no_shim zero-space-module-header
+  printf 'ok zero-space-module-header\n'
+}
+
 case_commented_run_header() {
   local status
   new_case commented-run-header
@@ -324,6 +354,32 @@ case_indented_run_header() {
   assert_log_has indented-run-header 'non-canonical run header'
   assert_no_shim indented-run-header
   printf 'ok indented-run-header\n'
+}
+
+case_zero_space_run_header() {
+  local status
+  new_case zero-space-run-header
+  printf '%s\n' '' 'run"applies"{' '}' >> "${case_dir}/modules/cf-kv/tests/smoke.tftest.hcl"
+  git -C "${case_dir}" add -A
+  status=$(run_check zero-space-run-header shim)
+  assert_status zero-space-run-header "${status}" 1
+  assert_log_has zero-space-run-header 'non-canonical run header'
+  assert_no_shim zero-space-run-header
+  printf 'ok zero-space-run-header\n'
+}
+
+case_relative_plugin_cache() {
+  local status cache_path expected_cache_path
+  new_case relative-plugin-cache
+  status=$(run_check relative-plugin-cache relative-cache)
+  assert_status relative-plugin-cache "${status}" 0
+  assert_log_lacks relative-plugin-cache 'check-modules.sh:'
+  [[ -d "${case_dir}/relative-cache" ]] || fail_case relative-plugin-cache 'relative plugin cache was not created in the fixture directory'
+  [[ -f "${cacheprobe_log}" ]] || fail_case relative-plugin-cache 'tofu did not receive a plugin cache path'
+  cache_path=$(<"${cacheprobe_log}")
+  expected_cache_path=$(readlink -f -- "${case_dir}/relative-cache") || fail_case relative-plugin-cache 'could not canonicalize the fixture plugin cache path'
+  [[ "${cache_path}" == "${expected_cache_path}" ]] || fail_case relative-plugin-cache "tofu received a non-absolute or wrong plugin cache path: ${cache_path}"
+  printf 'ok relative-plugin-cache\n'
 }
 
 case_json_test_file() {
@@ -621,8 +677,11 @@ case_env_allowlist
 case_tf_data_dir
 case_commented_module_header
 case_indented_module_header
+case_zero_space_module_header
 case_commented_run_header
 case_indented_run_header
+case_zero_space_run_header
+case_relative_plugin_cache
 case_json_test_file
 case_tf_cli_args
 case_untracked_gitattributes
