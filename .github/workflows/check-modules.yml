@@ -16,9 +16,12 @@ concurrency:
 jobs:
   check-modules:
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
       # On pull requests, checkout uses GitHub's merge ref, judging the prospective merge into main.
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
       - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
         with:
           tofu_version: 1.12.6
