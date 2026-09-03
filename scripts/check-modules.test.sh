@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# This test requires GNU coreutils and sed (readlink -f, sed -i).
+# This test requires GNU awk, GNU coreutils, GNU findutils, GNU grep and GNU sed (readlink -f, sed -i).
 
 set -euo pipefail
 
