@@ -49,6 +49,25 @@ fail() {
   exit 1
 }
 
+append_end_marker() {
+  local list=$1 marker=$2
+  case "${marker}" in
+    nul)
+      printf '\0' >> "${tmp_dir}/${list}" || fail "could not write the end marker of ${list}"
+      ;;
+    line)
+      printf '0:\n' >> "${tmp_dir}/${list}" || fail "could not write the end marker of ${list}"
+      ;;
+    *)
+      fail "unknown end marker for ${list}"
+      ;;
+  esac
+}
+
+could_not_read_list_to_end() {
+  fail "could not read $1 to its end"
+}
+
 set -euo pipefail
 
 script_path=$(readlink -f "${BASH_SOURCE[0]}") || fail 'cannot resolve the script path'
@@ -162,18 +181,28 @@ cd "${index_dir}" || fail "could not change to the index export"
 if ! find modules -mindepth 1 -maxdepth 1 -print0 > "${tmp_dir}/module-entries"; then
   fail "could not enumerate modules/"
 fi
+append_end_marker module-entries nul
 module_dirs=()
+module_entries_end=''
 while IFS= read -r -d '' module_dir; do
+  if [[ -z "${module_dir}" ]]; then
+    module_entries_end=1
+    break
+  fi
   module=${module_dir##*/}
   [[ "${module}" =~ ^[a-z0-9-]+$ ]] || fail "module directory name is invalid: ${module}"
   module_dirs+=("${module_dir}")
 done < "${tmp_dir}/module-entries"
+[[ -n "${module_entries_end}" ]] || could_not_read_list_to_end module-entries
 
 if ! find modules -type l -print0 > "${tmp_dir}/symlinks"; then
   fail "could not inspect modules/ for symlinks"
 fi
+append_end_marker symlinks nul
 if IFS= read -r -d '' symlink < "${tmp_dir}/symlinks"; then
-  fail "profile refusal: ${symlink} is a symlink; the check keeps a fixed shape"
+  [[ -z "${symlink}" ]] || fail "profile refusal: ${symlink} is a symlink; the check keeps a fixed shape"
+else
+  could_not_read_list_to_end symlinks
 fi
 
 for module_dir in "${module_dirs[@]}"; do
@@ -199,7 +228,13 @@ for module_dir in "${module_dirs[@]}"; do
   if ! find "${module_dir}" -maxdepth 1 -type f -print0 > "${tmp_dir}/module-files"; then
     fail "could not enumerate ${module_dir}"
   fi
+  append_end_marker module-files nul
+  module_files_end=''
   while IFS= read -r -d '' module_file; do
+    if [[ -z "${module_file}" ]]; then
+      module_files_end=1
+      break
+    fi
     file_name=${module_file##*/}
     case "${file_name}" in
       *.tofu|*.tf.json|*.tofu.json)
@@ -208,11 +243,18 @@ for module_dir in "${module_dirs[@]}"; do
     esac
     if [[ "${file_name}" == variables.tf || "${file_name}" == outputs.tf ]]; then
       if grep -nE '^[[:space:]]*(variable|output)[[:space:]]*"' "${module_file}" > "${tmp_dir}/interface-headers"; then
+        append_end_marker interface-headers line
+        interface_headers_end=''
         while IFS= read -r interface_header; do
+          if [[ "${interface_header}" == '0:' ]]; then
+            interface_headers_end=1
+            break
+          fi
           line_number=${interface_header%%:*}
           header=${interface_header#*:}
           [[ "${header}" =~ ^(variable|output)\ \"[ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_][ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_0123456789-]*\"\ \{$ ]] || fail "profile refusal: ${module_file} line ${line_number}: an interface header is exactly variable \"<name>\" { or output \"<name>\" { with an ASCII identifier"
         done < "${tmp_dir}/interface-headers"
+        [[ -n "${interface_headers_end}" ]] || could_not_read_list_to_end interface-headers
       else
         status=$?
         [[ "${status}" -eq 1 ]] || fail "grep failed for ${module_file} (status ${status})"
@@ -230,6 +272,7 @@ for module_dir in "${module_dirs[@]}"; do
       fi
     fi
   done < "${tmp_dir}/module-files"
+  [[ -n "${module_files_end}" ]] || could_not_read_list_to_end module-files
 done
 
 for module_dir in "${module_dirs[@]}"; do
@@ -403,17 +446,28 @@ for module_dir in "${module_dirs[@]}"; do
   if ! find "${module_dir}" -type f ! -name '.*' \( -name '*.tftest.hcl' -o -name '*.tofutest.hcl' -o -name '*.tftest.json' -o -name '*.tofutest.json' \) -print0 > "${tmp_dir}/module-test-files"; then
     fail "could not enumerate test files"
   fi
+  append_end_marker module-test-files nul
+  module_test_files_end=''
   while IFS= read -r -d '' test_file; do
+    if [[ -z "${test_file}" ]]; then
+      module_test_files_end=1
+      break
+    fi
     test_dir=${test_file%/*}
     if [[ "${test_dir}" != "${module_dir}" && "${test_dir}" != "${module_dir}/tests" ]]; then
       fail "profile refusal: ${test_file} is a test file outside the module directory and tests/; tofu test never runs it; the check keeps a fixed shape"
     fi
+    printf '%s\0' "${test_file}" >> "${test_manifest}" || fail "could not prepare test manifest"
   done < "${tmp_dir}/module-test-files"
-  if ! cat -- "${tmp_dir}/module-test-files" >> "${test_manifest}"; then
-    fail "could not prepare test manifest"
-  fi
+  [[ -n "${module_test_files_end}" ]] || could_not_read_list_to_end module-test-files
 done
+append_end_marker test-files nul
+test_files_end=''
 while IFS= read -r -d '' test_file; do
+  if [[ -z "${test_file}" ]]; then
+    test_files_end=1
+    break
+  fi
   case "${test_file}" in
     *.tftest.json|*.tofutest.json)
       fail "profile refusal: ${test_file} is a JSON test file; the check keeps a fixed shape"
@@ -487,6 +541,7 @@ while IFS= read -r -d '' test_file; do
     esac
   fi
 done < "${test_manifest}"
+[[ -n "${test_files_end}" ]] || could_not_read_list_to_end test-files
 
 mkdir -p "${tmp_dir}/home" || fail "could not create temporary HOME: ${tmp_dir}/home"
 

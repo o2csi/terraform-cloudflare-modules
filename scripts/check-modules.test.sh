@@ -571,14 +571,31 @@ case_block_comment_before_declaration() {
 }
 
 case_unicode_variable_name_locale() {
-  local status
+  local status locales locale_name collating_locale=''
   new_case unicode-variable-name-locale
   printf '%s\n' 'variable "é" {' '  description = "documented variable"' '}' > "${case_dir}/modules/cf-kv/variables.tf"
   git -C "${case_dir}" add -A
-  # If en_US.UTF-8 is unavailable, Bash warns and falls back; the refusal still passes.
-  export LC_ALL=en_US.UTF-8
-  status=$(run_check unicode-variable-name-locale shim)
-  unset LC_ALL
+  if locales=$(locale -a); then
+    :
+  else
+    status=$?
+    fail_case unicode-variable-name-locale "locale -a failed (status ${status})"
+  fi
+  while IFS= read -r locale_name; do
+    [[ -n "${locale_name}" ]] || continue
+    if LC_ALL="${locale_name}" bash -c '[[ "é" =~ ^[A-Za-z]+$ ]]'; then
+      collating_locale=${locale_name}
+      break
+    fi
+  done <<< "${locales}"
+  if [[ -z "${collating_locale}" ]]; then
+    printf 'skip unicode-variable-name-locale: no installed locale collates é into [A-Za-z]\n'
+    return 0
+  fi
+  status=$( (
+    export "LC_ALL=${collating_locale}"
+    run_check unicode-variable-name-locale shim
+  ) )
   assert_status unicode-variable-name-locale "${status}" 1
   assert_log_has unicode-variable-name-locale 'profile refusal: modules/cf-kv/variables.tf line 1: an interface header is exactly variable "<name>" { or output "<name>" { with an ASCII identifier'
   assert_no_shim unicode-variable-name-locale
@@ -961,19 +978,32 @@ case_long_run_label() {
   printf 'ok long-run-label\n'
 }
 
-case_undocumented_block_name() {
+case_control_bytes_block_name() {
   local status block_name
-  new_case undocumented-block-name
+  new_case control-bytes-block-name
   printf -v block_name '\033[31mx'
   printf 'variable "%s" {\n}\n' "${block_name}" >> "${case_dir}/modules/cf-kv/variables.tf"
   git -C "${case_dir}" add -A
-  status=$(run_check undocumented-block-name shim)
-  assert_status undocumented-block-name "${status}" 1
-  assert_one_control_free_record undocumented-block-name
-  assert_log_matches undocumented-block-name 'line [0-9]+'
-  assert_log_has undocumented-block-name 'an interface header is exactly variable "<name>" { or output "<name>" { with an ASCII identifier'
-  assert_no_shim undocumented-block-name
-  printf 'ok undocumented-block-name\n'
+  status=$(run_check control-bytes-block-name shim)
+  assert_status control-bytes-block-name "${status}" 1
+  assert_one_control_free_record control-bytes-block-name
+  assert_log_matches control-bytes-block-name 'line [0-9]+'
+  assert_log_has control-bytes-block-name 'an interface header is exactly variable "<name>" { or output "<name>" { with an ASCII identifier'
+  assert_no_shim control-bytes-block-name
+  printf 'ok control-bytes-block-name\n'
+}
+
+case_missing_description() {
+  local status
+  new_case missing-description
+  printf '%s\n' 'variable "x" {' '  type = string' '}' > "${case_dir}/modules/cf-kv/variables.tf"
+  git -C "${case_dir}" add -A
+  status=$(run_check missing-description shim)
+  assert_status missing-description "${status}" 1
+  assert_log_has missing-description 'block lacks a description'
+  assert_log_matches missing-description 'line [0-9]+'
+  assert_no_shim missing-description
+  printf 'ok missing-description\n'
 }
 
 case_baseline
@@ -1032,5 +1062,6 @@ case_tab_in_test_filename
 case_newline_in_test_filename
 case_unicode_run_label
 case_long_run_label
-case_undocumented_block_name
+case_control_bytes_block_name
+case_missing_description
 printf 'check-modules tests: PASS\n'
