@@ -64,7 +64,14 @@ source = "git::https://github.com/o2csi/terraform-cloudflare-modules.git//module
 - **Placeholder content** — Worker content is deployed via `wrangler`, not Terraform. Modules use a placeholder and ignore content drift via `lifecycle.ignore_changes`
 - **Bindings** — passed as maps/lists of objects for flexibility (CF v5 unified bindings schema)
 - **Route creation** — `route_pattern = ""` disables route creation in cf-worker-full
-- **Checks** — `scripts/check-modules.sh` judges an export of the Git index (stage what you want checked with `git add`, untracked and unstaged paths are not exported, Git configuration and info/attributes still apply): the layout, the interface descriptions, every module's `tofu validate` and `tofu test`, and each module README's single column-zero ```` ```hcl ```` fenced example (indented or inline snippets are not validated), with tofu receiving only your `PATH` and plugin-cache path (an empty `HOME` and a private `TMPDIR` otherwise); it is not a sandbox, so run it only on a branch you would run a script from. Run it before pushing.
+
+## Checks
+
+- What it reads: an export of the Git index (`git add` what you want checked); untracked and unstaged paths are not exported; Git configuration and `info/attributes` still apply.
+- What it requires: the five files per module; every `variable` and `output` declared in `variables.tf`/`outputs.tf` as a column-zero canonical header with an ASCII name, a line beginning exactly `  description =`, and a column-zero `}`; no `.tofu` or JSON configuration in a module root.
+- What it refuses before running tofu: a fixed lexical profile, not an HCL parser—`/*` and `<<` anywhere in `variables.tf`/`outputs.tf`, `/*` outside strings in any other module-root `.tf`, `/*` and `<<` outside strings in README examples and test files, a `}` followed by text, a `module`/`run` header that is not canonical or still open at end of file, a test file outside the module root and `tests/`, or a `?ref=` that is not a literal ref; the header of `scripts/check-modules.sh` is the complete list.
+- What it runs: `tofu fmt -check`, then per module `init`, `validate`, `test`, then each README's single column-zero ```` ```hcl ```` example with its source pointed at the local copy, through `init` and `validate`; tofu receives only `PATH`, an empty `HOME`, a private `TMPDIR`, and the plugin cache; there is no provider lock file, so each `init` takes the newest provider matching `~> 5.0`; this is not a sandbox: run it only on a branch you would run a script from.
+- What it needs and where it runs: Git 2.40 or later, OpenTofu, GNU awk, coreutils, findutils, grep and sed, and network access to the registry; locally before pushing, and in CI on every push to `main` and every pull request into `main` ([`.github/workflows/check-modules.yml`](.github/workflows/check-modules.yml); on a pull request the check judges the prospective merge).
 
 ## Versioning
 
