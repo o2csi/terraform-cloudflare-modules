@@ -32,11 +32,16 @@
 # Without a lock file, tofu init selects the newest registry release satisfying ~> 5.0 — a freshness sentinel, not a
 # reproducible build — and runs it at your privilege; a mirror configured in your CLI configuration is not used.
 # tofu test executes what tofu discovers in the module root and tests/; scripts/check-modules.test.sh exercises the
-# refusals and the environment.
-fail() {
+# refusals and the environment. Each fail diagnostic is one record under 4096 bytes; only the record-terminating
+# newline is below 0x20.
+render_failure() {
   local message
-  message=$(LC_ALL=C printf '%s' "$*" | LC_ALL=C tr -d '\000-\010\013-\037\177' | head -c 4076 || :)
+  message=$(LC_ALL=C printf '%s' "$*" | LC_ALL=C tr -d '\000-\037\177' | head -c 4076 || :)
   printf 'check-modules.sh: %s\n' "${message}" >&2
+}
+
+fail() {
+  render_failure "$@"
   exit 1
 }
 
@@ -124,7 +129,9 @@ cleanup() {
   local status=$?
   if [[ -n "${tmp_dir}" ]] && ! rm -rf -- "${tmp_dir}"; then
     trap - EXIT
-    fail "could not remove temporary directory: ${tmp_dir}"
+    render_failure "could not remove temporary directory: ${tmp_dir}"
+    [[ "${status}" -ne 0 ]] && exit "${status}"
+    exit 1
   fi
   exit "${status}"
 }
@@ -345,7 +352,7 @@ for module_dir in "${module_dirs[@]}"; do
   source_module=${source_name_and_ref%%\?ref=*}
   source_ref=${source_name_and_ref#*\?ref=}
   [[ "${source_module}" == "${module}" && -n "${source_ref}" ]] || fail "assertion 6: ${module} README has no module source ending in //modules/${module}?ref=<something>\""
-  if [[ ! "${source_ref}" =~ ^[A-Za-z0-9._/][A-Za-z0-9._/-]*$ ]]; then
+  if [[ ! "${source_ref}" =~ ^[ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._/][ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._/-]*$ ]]; then
     fail "assertion 6: ${module} README example ref is not a literal Git reference that git check-ref-format --allow-onelevel accepts"
   fi
   if git check-ref-format --allow-onelevel "${source_ref}" >/dev/null 2>&1; then

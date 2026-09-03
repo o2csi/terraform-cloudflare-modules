@@ -666,7 +666,7 @@ case_stem_collision() {
 assert_safe_log() {
   local case_name=$1 control_bytes log_bytes status
   local log="${logs_dir}/${case_name}.log"
-  if control_bytes=$(LC_ALL=C tr -d '\011\012\040-\377' < "${log}" | wc -c); then
+  if control_bytes=$(LC_ALL=C tr -d '\012\040-\377' < "${log}" | wc -c); then
     :
   else
     status=$?
@@ -727,6 +727,45 @@ case_control_bytes_test_filename() {
   assert_status control-bytes-test-filename "${status}" 1
   assert_safe_log control-bytes-test-filename
   printf 'ok control-bytes-test-filename\n'
+}
+
+case_tab_in_test_filename() {
+  local status test_name
+  new_case tab-in-test-filename
+  printf -v test_name 'a\tb.tftest.json'
+  printf '{}\n' > "${case_dir}/modules/cf-kv/tests/${test_name}"
+  git -C "${case_dir}" add -A
+  status=$(run_check tab-in-test-filename shim)
+  assert_status tab-in-test-filename "${status}" 1
+  assert_safe_log tab-in-test-filename
+  printf 'ok tab-in-test-filename\n'
+}
+
+case_newline_in_test_filename() {
+  local status test_name diagnostic_lines log_lines
+  new_case newline-in-test-filename
+  printf -v test_name 'a\nforged.tftest.json'
+  printf '{}\n' > "${case_dir}/modules/cf-kv/tests/${test_name}"
+  git -C "${case_dir}" add -A
+  status=$(run_check newline-in-test-filename shim)
+  assert_status newline-in-test-filename "${status}" 1
+  if diagnostic_lines=$(grep -c '^check-modules.sh:' "${logs_dir}/newline-in-test-filename.log"); then
+    :
+  else
+    status=$?
+    [[ "${status}" -eq 1 ]] || fail_case newline-in-test-filename "could not count diagnostic records (grep exit ${status})"
+    diagnostic_lines=0
+  fi
+  [[ "${diagnostic_lines}" -eq 1 ]] || fail_case newline-in-test-filename "expected one diagnostic record, got ${diagnostic_lines}"
+  if log_lines=$(wc -l < "${logs_dir}/newline-in-test-filename.log"); then
+    :
+  else
+    status=$?
+    fail_case newline-in-test-filename "could not count log lines (wc exit ${status})"
+  fi
+  [[ "${log_lines}" -eq 1 ]] || fail_case newline-in-test-filename "expected one log line, got ${log_lines}"
+  assert_safe_log newline-in-test-filename
+  printf 'ok newline-in-test-filename\n'
 }
 
 case_unicode_run_label() {
@@ -815,6 +854,8 @@ case_stem_collision
 case_control_bytes_run_label
 case_control_bytes_module_label
 case_control_bytes_test_filename
+case_tab_in_test_filename
+case_newline_in_test_filename
 case_unicode_run_label
 case_long_run_label
 case_undocumented_block_name
