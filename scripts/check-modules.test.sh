@@ -1,7 +1,16 @@
 #!/usr/bin/env bash
-# This test requires GNU coreutils and sed (readlink -f, sed -i).
+# This test requires GNU awk, GNU coreutils, GNU findutils, GNU grep and GNU sed (readlink -f, sed -i).
 
 set -euo pipefail
+
+if [[ "$#" -eq 0 ]]; then
+  prologue_only=0
+elif [[ "$#" -eq 1 && "$1" == --prologue-only ]]; then
+  prologue_only=1
+else
+  printf 'FAIL: setup: expected no arguments or --prologue-only\n' >&2
+  exit 1
+fi
 
 script_path=$(readlink -f "${BASH_SOURCE[0]}") || { printf 'FAIL: setup: cannot resolve the test path\n' >&2; exit 1; }
 repo_root=$(dirname "$(dirname "${script_path}")")
@@ -45,11 +54,14 @@ printf '%s\n' \
   '  }' \
   '}' > "${base_fixture}/modules/cf-kv/tests/smoke.tftest.hcl"
 chmod +x "${base_fixture}/scripts/check-modules.sh"
+unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_CEILING_DIRECTORIES GIT_ATTR_SOURCE
 git -C "${base_fixture}" init -q
 git -C "${base_fixture}" config user.name check-modules-test
 git -C "${base_fixture}" config user.email check-modules-test@example.invalid
 git -C "${base_fixture}" add -A
 git -C "${base_fixture}" commit -q -m fixture
+
+[[ "${prologue_only}" -eq 0 ]] || exit 0
 
 envshim_dir="${test_root}/envshim"
 mkdir -p "${envshim_dir}"
@@ -376,7 +388,12 @@ case_relative_plugin_cache() {
   assert_log_lacks relative-plugin-cache 'check-modules.sh:'
   [[ -d "${case_dir}/relative-cache" ]] || fail_case relative-plugin-cache 'relative plugin cache was not created in the fixture directory'
   [[ -f "${cacheprobe_log}" ]] || fail_case relative-plugin-cache 'tofu did not receive a plugin cache path'
-  cache_path=$(<"${cacheprobe_log}")
+  if cache_path=$(<"${cacheprobe_log}"); then
+    :
+  else
+    status=$?
+    fail_case relative-plugin-cache "could not read ${cacheprobe_log} (read exit ${status})"
+  fi
   expected_cache_path=$(readlink -f -- "${case_dir}/relative-cache") || fail_case relative-plugin-cache 'could not canonicalize the fixture plugin cache path'
   [[ "${cache_path}" == "${expected_cache_path}" ]] || fail_case relative-plugin-cache "tofu received a non-absolute or wrong plugin cache path: ${cache_path}"
   printf 'ok relative-plugin-cache\n'
@@ -406,27 +423,52 @@ case_tf_cli_args() {
 }
 
 case_env_allowlist() {
-  local status names home_value
+  local status names home_value evidence_file
   new_case env-allowlist
   export CLOUDFLARE_API_TOKEN=leak TF_CLI_CONFIG_FILE=/nonexistent TF_DATA_DIR="${case_dir}/.tfdata" HTTPS_PROXY=http://127.0.0.1:9
   status=$(run_check env-allowlist envshim)
   unset CLOUDFLARE_API_TOKEN TF_CLI_CONFIG_FILE TF_DATA_DIR HTTPS_PROXY
   assert_status env-allowlist "${status}" 1
-  names=$(cut -d= -f1 "$(shim_log env-allowlist)" | sort -u | tr '\n' ' ')
+  evidence_file=$(shim_log env-allowlist)
+  if names=$(cut -d= -f1 "${evidence_file}" | sort -u | tr '\n' ' '); then
+    :
+  else
+    status=$?
+    fail_case env-allowlist "could not read ${evidence_file} (cut/sort exit ${status})"
+  fi
   [[ "${names}" == 'HOME PATH TF_PLUGIN_CACHE_DIR TMPDIR ' ]] || fail_case env-allowlist "unexpected tofu environment names: ${names}"
-  home_value=$(grep '^HOME=' "$(shim_log env-allowlist)")
+  if home_value=$(grep '^HOME=' "${evidence_file}"); then
+    :
+  else
+    status=$?
+    [[ "${status}" -eq 1 ]] || fail_case env-allowlist "could not read ${evidence_file} (grep exit ${status})"
+    home_value=''
+  fi
   [[ "${home_value}" != "HOME=${HOME}" && "${home_value}" == */home ]] || fail_case env-allowlist "unexpected tofu HOME: ${home_value}"
   printf 'ok env-allowlist\n'
 }
 
 case_untracked_gitattributes() {
-  local status
+  local status evidence_file cr_count
   new_case untracked-gitattributes
   printf '%s\n' '*.tf eol=crlf' > "${case_dir}/.gitattributes"
   status=$(run_check untracked-gitattributes envshim)
   assert_status untracked-gitattributes "${status}" 1
   assert_shim untracked-gitattributes
-  grep -qx 'cr-count=0' "${test_root}/cache/untracked-gitattributes/cr-count" || fail_case untracked-gitattributes "export carries carriage returns: $(grep '^cr-count=' "${test_root}/cache/untracked-gitattributes/cr-count")"
+  evidence_file="${test_root}/cache/untracked-gitattributes/cr-count"
+  if grep -qx 'cr-count=0' "${evidence_file}"; then
+    :
+  else
+    status=$?
+    [[ "${status}" -eq 1 ]] || fail_case untracked-gitattributes "could not read ${evidence_file} (grep exit ${status})"
+    if cr_count=$(grep '^cr-count=' "${evidence_file}"); then
+      fail_case untracked-gitattributes "export carries carriage returns: ${cr_count}"
+    else
+      status=$?
+      [[ "${status}" -eq 1 ]] || fail_case untracked-gitattributes "could not read ${evidence_file} (grep exit ${status})"
+      fail_case untracked-gitattributes 'export carries carriage returns'
+    fi
+  fi
   printf 'ok untracked-gitattributes\n'
 }
 
@@ -440,6 +482,106 @@ case_git_index_file() {
   assert_log_lacks git-index-file 'modules/ is absent from the index'
   assert_shim git-index-file
   printf 'ok git-index-file\n'
+}
+
+case_tofu_file_in_module() {
+  local status
+  new_case tofu-file-in-module
+  printf '%s\n' 'output "b" {' '  description = "documented output"' '  value       = 1' '}' > "${case_dir}/modules/cf-kv/outputs.tofu"
+  git -C "${case_dir}" add -A
+  status=$(run_check tofu-file-in-module shim)
+  assert_status tofu-file-in-module "${status}" 1
+  assert_log_has tofu-file-in-module 'profile refusal: modules/cf-kv/outputs.tofu is a .tofu or JSON configuration file; the check reads .tf files only'
+  assert_no_shim tofu-file-in-module
+  printf 'ok tofu-file-in-module\n'
+}
+
+case_json_config_in_module() {
+  local status
+  new_case json-config-in-module
+  printf '%s\n' '{}' > "${case_dir}/modules/cf-kv/.extra.tf.json"
+  git -C "${case_dir}" add -A
+  status=$(run_check json-config-in-module shim)
+  assert_status json-config-in-module "${status}" 1
+  assert_log_has json-config-in-module 'profile refusal: modules/cf-kv/.extra.tf.json is a .tofu or JSON configuration file; the check reads .tf files only'
+  assert_no_shim json-config-in-module
+  printf 'ok json-config-in-module\n'
+}
+
+case_output_in_extra_tf() {
+  local status
+  new_case output-in-extra-tf
+  printf '%s\n' 'output "c" {' '  value = 1' '}' > "${case_dir}/modules/cf-kv/extra.tf"
+  git -C "${case_dir}" add -A
+  status=$(run_check output-in-extra-tf shim)
+  assert_status output-in-extra-tf "${status}" 1
+  assert_log_has output-in-extra-tf 'assertion 3: modules/cf-kv/extra.tf line 1 declares a variable or output outside variables.tf and outputs.tf'
+  assert_no_shim output-in-extra-tf
+  printf 'ok output-in-extra-tf\n'
+}
+
+case_indented_variable_header() {
+  local status
+  new_case indented-variable-header
+  printf '%s\n' '  variable "x" {' '  description = "documented variable"' '}' > "${case_dir}/modules/cf-kv/variables.tf"
+  git -C "${case_dir}" add -A
+  status=$(run_check indented-variable-header shim)
+  assert_status indented-variable-header "${status}" 1
+  assert_log_has indented-variable-header 'profile refusal: modules/cf-kv/variables.tf line 1: an interface header is exactly variable "<name>" { or output "<name>" { with an ASCII identifier'
+  assert_no_shim indented-variable-header
+  printf 'ok indented-variable-header\n'
+}
+
+case_unicode_variable_name() {
+  local status
+  new_case unicode-variable-name
+  printf '%s\n' 'variable "é" {' '  description = "documented variable"' '}' > "${case_dir}/modules/cf-kv/variables.tf"
+  git -C "${case_dir}" add -A
+  status=$(run_check unicode-variable-name shim)
+  assert_status unicode-variable-name "${status}" 1
+  assert_log_has unicode-variable-name 'profile refusal: modules/cf-kv/variables.tf line 1: an interface header is exactly variable "<name>" { or output "<name>" { with an ASCII identifier'
+  assert_no_shim unicode-variable-name
+  printf 'ok unicode-variable-name\n'
+}
+
+case_harness_clears_git_selectors() {
+  local status
+  new_case harness-clears-git-selectors
+  if (cd "${repo_root}" && GIT_INDEX_FILE="${case_dir}/ext-index" bash "${script_path}" --prologue-only) > "${logs_dir}/harness-clears-git-selectors.log" 2>&1; then
+    status=0
+  else
+    status=$?
+  fi
+  assert_status harness-clears-git-selectors "${status}" 0
+  [[ ! -e "${case_dir}/ext-index" ]] || fail_case harness-clears-git-selectors 'prologue wrote GIT_INDEX_FILE'
+  printf 'ok harness-clears-git-selectors\n'
+}
+
+case_block_comment_before_declaration() {
+  local status
+  new_case block-comment-before-declaration
+  printf '%s\n' '/* c */ output "hidden" {' '  description = "x"' '  value = 1' '}' > "${case_dir}/modules/cf-kv/extra.tf"
+  git -C "${case_dir}" add -A
+  status=$(run_check block-comment-before-declaration shim)
+  assert_status block-comment-before-declaration "${status}" 1
+  assert_log_has block-comment-before-declaration 'modules/cf-kv/extra.tf contains /* outside a string'
+  assert_no_shim block-comment-before-declaration
+  printf 'ok block-comment-before-declaration\n'
+}
+
+case_unicode_variable_name_locale() {
+  local status
+  new_case unicode-variable-name-locale
+  printf '%s\n' 'variable "é" {' '  description = "documented variable"' '}' > "${case_dir}/modules/cf-kv/variables.tf"
+  git -C "${case_dir}" add -A
+  # If en_US.UTF-8 is unavailable, Bash warns and falls back; the refusal still passes.
+  export LC_ALL=en_US.UTF-8
+  status=$(run_check unicode-variable-name-locale shim)
+  unset LC_ALL
+  assert_status unicode-variable-name-locale "${status}" 1
+  assert_log_has unicode-variable-name-locale 'profile refusal: modules/cf-kv/variables.tf line 1: an interface header is exactly variable "<name>" { or output "<name>" { with an ASCII identifier'
+  assert_no_shim unicode-variable-name-locale
+  printf 'ok unicode-variable-name-locale\n'
 }
 
 case_relative_path() {
@@ -686,6 +828,14 @@ case_json_test_file
 case_tf_cli_args
 case_untracked_gitattributes
 case_git_index_file
+case_tofu_file_in_module
+case_json_config_in_module
+case_output_in_extra_tf
+case_indented_variable_header
+case_unicode_variable_name
+case_harness_clears_git_selectors
+case_block_comment_before_declaration
+case_unicode_variable_name_locale
 case_relative_path
 case_block_commented_module
 case_heredoc_in_example
