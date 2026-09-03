@@ -24,6 +24,7 @@
 # your files and processes. Run the check only on a branch you would run a script from.
 # Without a lock file, tofu init selects the newest registry release satisfying ~> 5.0 — a freshness sentinel, not a
 # reproducible build — and runs it at your privilege; a mirror configured in your CLI configuration is not used.
+# Interface declarations: variable and output headers are accepted only in variables.tf and outputs.tf, at column 0 as variable "<name>" { / output "<name>" { with an ASCII identifier (this repository's profile; HCL itself allows Unicode letters); a .tofu, .tf.json or .tofu.json file in a module root is refused, because tofu would load it (and .tofu shadows .tf) outside the description scan.
 # tofu test executes what tofu discovers in the module root and tests/; scripts/check-modules.test.sh exercises the
 # refusals and the environment.
 set -euo pipefail
@@ -178,11 +179,37 @@ for module_dir in "${module_dirs[@]}"; do
 done
 
 for module_dir in "${module_dirs[@]}"; do
-  module=${module_dir##*/}
-  main_file="${module_dir}/main.tf"
-  if grep_answer "${main_file}" -nE '^(variable|output) "'; then
-    fail "assertion 3: ${module}/main.tf declares a variable or output"
+  if ! find "${module_dir}" -maxdepth 1 -type f -print0 > "${tmp_dir}/module-files"; then
+    fail "could not enumerate ${module_dir}"
   fi
+  while IFS= read -r -d '' module_file; do
+    file_name=${module_file##*/}
+    case "${file_name}" in
+      *.tofu|*.tf.json|*.tofu.json)
+        fail "profile refusal: ${module_file} is a .tofu or JSON configuration file; the check reads .tf files only"
+        ;;
+    esac
+    if [[ "${file_name}" == variables.tf || "${file_name}" == outputs.tf ]]; then
+      if interface_headers=$(grep -nE '^[[:space:]]*(variable|output)[[:space:]]*"' "${module_file}"); then
+        while IFS= read -r interface_header; do
+          line_number=${interface_header%%:*}
+          header=${interface_header#*:}
+          [[ "${header}" =~ ^(variable|output)\ \"[A-Za-z_][A-Za-z0-9_-]*\"\ \{$ ]] || fail "profile refusal: ${module_file} line ${line_number}: an interface header is exactly variable \"<name>\" { or output \"<name>\" { with an ASCII identifier"
+        done <<< "${interface_headers}"
+      else
+        status=$?
+        [[ "${status}" -eq 1 ]] || fail "grep failed for ${module_file} (status ${status})"
+      fi
+    elif [[ "${file_name}" == *.tf ]]; then
+      if declaration_headers=$(grep -nE '^[[:space:]]*(variable|output)[[:space:]]*"' "${module_file}"); then
+        line_number=${declaration_headers%%:*}
+        fail "assertion 3: ${module_file} line ${line_number} declares a variable or output outside variables.tf and outputs.tf"
+      else
+        status=$?
+        [[ "${status}" -eq 1 ]] || fail "grep failed for ${module_file} (status ${status})"
+      fi
+    fi
+  done < "${tmp_dir}/module-files"
 done
 
 for module_dir in "${module_dirs[@]}"; do
