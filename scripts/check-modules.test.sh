@@ -23,7 +23,10 @@ base_fixture="${test_root}/base"
 logs_dir="${test_root}/logs"
 shim_dir="${test_root}/shim"
 real_path=${PATH}
-mkdir -p "${base_fixture}/scripts" "${base_fixture}/modules/cf-kv/tests" "${logs_dir}" "${shim_dir}"
+tofu_bin=$(readlink -f -- "$(command -v tofu)") || { printf 'FAIL: setup: cannot resolve tofu\n' >&2; exit 1; }
+cacheprobe_dir="${test_root}/cacheprobe"
+cacheprobe_log="${test_root}/relative-cache-probe"
+mkdir -p "${base_fixture}/scripts" "${base_fixture}/modules/cf-kv/tests" "${logs_dir}" "${shim_dir}" "${cacheprobe_dir}"
 
 check_modules_script=${CHECK_MODULES_SCRIPT:-scripts/check-modules.sh}
 cp -- "${check_modules_script}" "${base_fixture}/scripts/check-modules.sh"
@@ -54,6 +57,8 @@ printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" "$*" >> "${TF_PLUGIN_CACHE_D
 chmod +x "${shim_dir}/tofu"
 printf '%s\n' '#!/usr/bin/env bash' "env | grep -Ev '^(PWD|SHLVL|_)=' > \"\${TF_PLUGIN_CACHE_DIR:?}/shim.log\"" 'if [[ -f modules/cf-kv/main.tf ]]; then grep -c $'\''\r'\'' modules/cf-kv/main.tf || true; else printf "0\\n"; fi | sed "s/^/cr-count=/" > "${TF_PLUGIN_CACHE_DIR:?}/cr-count"' 'exit 97' > "${envshim_dir}/tofu"
 chmod +x "${envshim_dir}/tofu"
+printf '%s\n' '#!/usr/bin/env bash' "printf '%s\\n' \"\${TF_PLUGIN_CACHE_DIR:?}\" > '${cacheprobe_log}'" "exec '${tofu_bin}' \"\$@\"" > "${cacheprobe_dir}/tofu"
+chmod +x "${cacheprobe_dir}/tofu"
 
 shim_log() {
   printf '%s/cache/%s/shim.log' "${test_root}" "$1"
@@ -88,6 +93,8 @@ run_check() {
     if PATH="${envshim_dir}:${real_path}" TF_PLUGIN_CACHE_DIR="${cache_dir}" "${case_dir}/scripts/check-modules.sh" > "${logs_dir}/${case_name}.log" 2>&1; then status=0; else status=$?; fi
   elif [[ "${mode}" == relative ]]; then
     if PATH=".:${shim_dir}:${real_path}" TF_PLUGIN_CACHE_DIR="${cache_dir}" "${case_dir}/scripts/check-modules.sh" > "${logs_dir}/${case_name}.log" 2>&1; then status=0; else status=$?; fi
+  elif [[ "${mode}" == relative-cache ]]; then
+    if (cd -- "${case_dir}" && PATH="${cacheprobe_dir}:${real_path}" TF_PLUGIN_CACHE_DIR=relative-cache "${case_dir}/scripts/check-modules.sh") > "${logs_dir}/${case_name}.log" 2>&1; then status=0; else status=$?; fi
   else
     mkdir -p "${test_root}/plugin-cache"
     if PATH="${real_path}" TF_PLUGIN_CACHE_DIR="${test_root}/plugin-cache" "${case_dir}/scripts/check-modules.sh" > "${logs_dir}/${case_name}.log" 2>&1; then status=0; else status=$?; fi
@@ -99,16 +106,30 @@ assert_status() {
   [[ "$2" -eq "$3" ]] || fail_case "$1" "expected rc $3, got $2"
 }
 
+log_probe() {
+  local case_name=$1 status
+  shift
+  if grep "$@" "${logs_dir}/${case_name}.log"; then
+    return 0
+  else
+    status=$?
+  fi
+  [[ "${status}" -eq 1 ]] && return 1
+  fail_case "${case_name}" "could not read ${logs_dir}/${case_name}.log (grep exit ${status})"
+}
+
 assert_log_has() {
-  grep -Fq -- "$2" "${logs_dir}/$1.log" || fail_case "$1" "missing log substring: $2"
+  log_probe "$1" -Fq -- "$2" || fail_case "$1" "missing log substring: $2"
 }
 
 assert_log_lacks() {
-  ! grep -Fq -- "$2" "${logs_dir}/$1.log" || fail_case "$1" "unexpected log substring: $2"
+  if log_probe "$1" -Fq -- "$2"; then
+    fail_case "$1" "unexpected log substring: $2"
+  fi
 }
 
 assert_log_matches() {
-  grep -Eq -- "$2" "${logs_dir}/$1.log" || fail_case "$1" "missing log pattern: $2"
+  log_probe "$1" -Eq -- "$2" || fail_case "$1" "missing log pattern: $2"
 }
 
 assert_no_shim() {
@@ -146,9 +167,21 @@ case_block_comment() {
   git -C "${case_dir}" add -A
   status=$(run_check block-comment shim)
   assert_status block-comment "${status}" 1
-  assert_log_has block-comment 'line-leading /*'
+  assert_log_has block-comment 'contains /*'
   assert_no_shim block-comment
   printf 'ok block-comment\n'
+}
+
+case_token_in_string() {
+  local status
+  new_case token-in-string
+  sed -i 's/title      = "example-namespace"/title      = "x\/*y<<z"/' "${case_dir}/modules/cf-kv/tests/smoke.tftest.hcl"
+  git -C "${case_dir}" add -A
+  status=$(run_check token-in-string shim)
+  assert_status token-in-string "${status}" 1
+  assert_log_lacks token-in-string 'profile refusal'
+  assert_shim token-in-string
+  printf 'ok token-in-string\n'
 }
 
 case_second_fence() {
@@ -239,7 +272,7 @@ case_run_without_plan() {
 }
 
 case_tf_data_dir() {
-  local status
+  local status status_out
   new_case tf-data-dir
   export TF_DATA_DIR="${case_dir}/.tfdata"
   status=$(run_check tf-data-dir real)
@@ -247,7 +280,10 @@ case_tf_data_dir() {
   assert_status tf-data-dir "${status}" 0
   assert_log_lacks tf-data-dir 'check-modules.sh:'
   [[ ! -e "${case_dir}/.tfdata" ]] || fail_case tf-data-dir 'TF_DATA_DIR was used'
-  [[ -z "$(git -C "${case_dir}" status --porcelain --ignored)" ]] || fail_case tf-data-dir 'fixture work tree changed'
+  if ! status_out=$(git -C "${case_dir}" status --porcelain --ignored); then
+    fail_case tf-data-dir 'git status failed'
+  fi
+  [[ -z "${status_out}" ]] || fail_case tf-data-dir 'fixture work tree changed'
   printf 'ok tf-data-dir\n'
 }
 
@@ -266,6 +302,36 @@ module "extra" { # comment\
   printf 'ok commented-module-header\n'
 }
 
+case_indented_module_header() {
+  local status
+  new_case indented-module-header
+  sed -i '/^```$/i\
+  module "extra" {\
+    source = "./x"\
+  }' "${case_dir}/modules/cf-kv/README.md"
+  git -C "${case_dir}" add -A
+  status=$(run_check indented-module-header shim)
+  assert_status indented-module-header "${status}" 1
+  assert_log_has indented-module-header 'non-canonical module header'
+  assert_no_shim indented-module-header
+  printf 'ok indented-module-header\n'
+}
+
+case_zero_space_module_header() {
+  local status
+  new_case zero-space-module-header
+  sed -i '/^```$/i\
+module"extra"{\
+  source = "./x"\
+}' "${case_dir}/modules/cf-kv/README.md"
+  git -C "${case_dir}" add -A
+  status=$(run_check zero-space-module-header shim)
+  assert_status zero-space-module-header "${status}" 1
+  assert_log_has zero-space-module-header 'non-canonical module header'
+  assert_no_shim zero-space-module-header
+  printf 'ok zero-space-module-header\n'
+}
+
 case_commented_run_header() {
   local status
   new_case commented-run-header
@@ -276,6 +342,44 @@ case_commented_run_header() {
   assert_log_has commented-run-header 'non-canonical run header'
   assert_no_shim commented-run-header
   printf 'ok commented-run-header\n'
+}
+
+case_indented_run_header() {
+  local status
+  new_case indented-run-header
+  printf '%s\n' '' '  run "applies" {' '  }' >> "${case_dir}/modules/cf-kv/tests/smoke.tftest.hcl"
+  git -C "${case_dir}" add -A
+  status=$(run_check indented-run-header shim)
+  assert_status indented-run-header "${status}" 1
+  assert_log_has indented-run-header 'non-canonical run header'
+  assert_no_shim indented-run-header
+  printf 'ok indented-run-header\n'
+}
+
+case_zero_space_run_header() {
+  local status
+  new_case zero-space-run-header
+  printf '%s\n' '' 'run"applies"{' '}' >> "${case_dir}/modules/cf-kv/tests/smoke.tftest.hcl"
+  git -C "${case_dir}" add -A
+  status=$(run_check zero-space-run-header shim)
+  assert_status zero-space-run-header "${status}" 1
+  assert_log_has zero-space-run-header 'non-canonical run header'
+  assert_no_shim zero-space-run-header
+  printf 'ok zero-space-run-header\n'
+}
+
+case_relative_plugin_cache() {
+  local status cache_path expected_cache_path
+  new_case relative-plugin-cache
+  status=$(run_check relative-plugin-cache relative-cache)
+  assert_status relative-plugin-cache "${status}" 0
+  assert_log_lacks relative-plugin-cache 'check-modules.sh:'
+  [[ -d "${case_dir}/relative-cache" ]] || fail_case relative-plugin-cache 'relative plugin cache was not created in the fixture directory'
+  [[ -f "${cacheprobe_log}" ]] || fail_case relative-plugin-cache 'tofu did not receive a plugin cache path'
+  cache_path=$(<"${cacheprobe_log}")
+  expected_cache_path=$(readlink -f -- "${case_dir}/relative-cache") || fail_case relative-plugin-cache 'could not canonicalize the fixture plugin cache path'
+  [[ "${cache_path}" == "${expected_cache_path}" ]] || fail_case relative-plugin-cache "tofu received a non-absolute or wrong plugin cache path: ${cache_path}"
+  printf 'ok relative-plugin-cache\n'
 }
 
 case_json_test_file() {
@@ -351,9 +455,217 @@ case_relative_path() {
   printf 'ok relative-path\n'
 }
 
+case_block_commented_module() {
+  local status
+  new_case block-commented-module
+  sed -i '/^```$/i\
+locals {\
+  hidden = 1 /*\
+module "fake" {\
+  source = "git::https://github.com/o2csi/terraform-cloudflare-modules.git//modules/cf-kv?ref=v0.3.0"\
+}\
+  */\
+}' "${case_dir}/modules/cf-kv/README.md"
+  git -C "${case_dir}" add -A
+  status=$(run_check block-commented-module shim)
+  assert_status block-commented-module "${status}" 1
+  assert_log_has block-commented-module 'contains /*'
+  assert_no_shim block-commented-module
+  printf 'ok block-commented-module\n'
+}
+
+case_heredoc_in_example() {
+  local status
+  new_case heredoc-in-example
+  sed -i '/^```$/i\
+locals { t = <<EOT\
+example\
+EOT\
+}' "${case_dir}/modules/cf-kv/README.md"
+  git -C "${case_dir}" add -A
+  status=$(run_check heredoc-in-example shim)
+  assert_status heredoc-in-example "${status}" 1
+  assert_log_has heredoc-in-example 'contains <<'
+  assert_no_shim heredoc-in-example
+  printf 'ok heredoc-in-example\n'
+}
+
+case_trailing_brace_in_example() {
+  local status
+  new_case trailing-brace-in-example
+  sed -i 's/^}$/} # comment/' "${case_dir}/modules/cf-kv/README.md"
+  git -C "${case_dir}" add -A
+  status=$(run_check trailing-brace-in-example shim)
+  assert_status trailing-brace-in-example "${status}" 1
+  assert_log_has trailing-brace-in-example 'closing line followed by text'
+  assert_no_shim trailing-brace-in-example
+  printf 'ok trailing-brace-in-example\n'
+}
+
+case_unterminated_module() {
+  local status
+  new_case unterminated-module
+  sed -i '/^}$/d' "${case_dir}/modules/cf-kv/README.md"
+  git -C "${case_dir}" add -A
+  status=$(run_check unterminated-module shim)
+  assert_status unterminated-module "${status}" 1
+  assert_log_has unterminated-module 'unclosed module block'
+  assert_no_shim unterminated-module
+  printf 'ok unterminated-module\n'
+}
+
+case_module_header_while_open() {
+  local status
+  new_case module-header-while-open
+  sed -i '/^}$/i\
+module "extra" {\
+  source = "./x"' "${case_dir}/modules/cf-kv/README.md"
+  git -C "${case_dir}" add -A
+  status=$(run_check module-header-while-open shim)
+  assert_status module-header-while-open "${status}" 1
+  assert_log_has module-header-while-open 'module header while the previous block is open'
+  assert_no_shim module-header-while-open
+  printf 'ok module-header-while-open\n'
+}
+
+case_noncanonical_module_while_open() {
+  local status
+  new_case noncanonical-module-while-open
+  sed -i '/^}$/i\
+module "extra" { # c' "${case_dir}/modules/cf-kv/README.md"
+  git -C "${case_dir}" add -A
+  status=$(run_check noncanonical-module-while-open shim)
+  assert_status noncanonical-module-while-open "${status}" 1
+  assert_log_has noncanonical-module-while-open 'module header while the previous block is open'
+  assert_no_shim noncanonical-module-while-open
+  printf 'ok noncanonical-module-while-open\n'
+}
+
+case_interpolated_ref() {
+  local status
+  new_case interpolated-ref
+  sed -i 's/?ref=v0.3.0/?ref=${var.ref}/' "${case_dir}/modules/cf-kv/README.md"
+  git -C "${case_dir}" add -A
+  status=$(run_check interpolated-ref shim)
+  assert_status interpolated-ref "${status}" 1
+  assert_log_has interpolated-ref 'not a literal Git reference'
+  assert_no_shim interpolated-ref
+  printf 'ok interpolated-ref\n'
+}
+
+case_block_commented_plan() {
+  local status
+  new_case block-commented-plan
+  printf '%s\n' '' 'run "applies" {' '  /*' '  command = plan' '  */' '}' >> "${case_dir}/modules/cf-kv/tests/smoke.tftest.hcl"
+  git -C "${case_dir}" add -A
+  status=$(run_check block-commented-plan shim)
+  assert_status block-commented-plan "${status}" 1
+  assert_log_has block-commented-plan 'contains /*'
+  assert_no_shim block-commented-plan
+  printf 'ok block-commented-plan\n'
+}
+
+case_heredoc_in_test() {
+  local status
+  new_case heredoc-in-test
+  printf '%s\n' '' 'run "x" {' '  command = plan' '  variables { title = <<EOT' 'example' 'EOT' '  }' '}' >> "${case_dir}/modules/cf-kv/tests/smoke.tftest.hcl"
+  git -C "${case_dir}" add -A
+  status=$(run_check heredoc-in-test shim)
+  assert_status heredoc-in-test "${status}" 1
+  assert_log_has heredoc-in-test 'contains <<'
+  assert_no_shim heredoc-in-test
+  printf 'ok heredoc-in-test\n'
+}
+
+case_trailing_brace_in_test() {
+  local status
+  new_case trailing-brace-in-test
+  printf '%s\n' '' 'run "applies" {' '} # comment' >> "${case_dir}/modules/cf-kv/tests/smoke.tftest.hcl"
+  git -C "${case_dir}" add -A
+  status=$(run_check trailing-brace-in-test shim)
+  assert_status trailing-brace-in-test "${status}" 1
+  assert_log_has trailing-brace-in-test 'closing line followed by text'
+  assert_no_shim trailing-brace-in-test
+  printf 'ok trailing-brace-in-test\n'
+}
+
+case_unterminated_run() {
+  local status
+  new_case unterminated-run
+  printf '%s\n' '' 'run "applies" {' '  command = plan' >> "${case_dir}/modules/cf-kv/tests/smoke.tftest.hcl"
+  git -C "${case_dir}" add -A
+  status=$(run_check unterminated-run shim)
+  assert_status unterminated-run "${status}" 1
+  assert_log_has unterminated-run 'unclosed at end of file'
+  assert_no_shim unterminated-run
+  printf 'ok unterminated-run\n'
+}
+
+case_run_header_while_open() {
+  local status
+  new_case run-header-while-open
+  printf '%s\n' '' 'run "a" {' '  command = plan' 'run "b" {' '  command = plan' '}' >> "${case_dir}/modules/cf-kv/tests/smoke.tftest.hcl"
+  git -C "${case_dir}" add -A
+  status=$(run_check run-header-while-open shim)
+  assert_status run-header-while-open "${status}" 1
+  assert_log_has run-header-while-open 'still open when the next run begins'
+  assert_no_shim run-header-while-open
+  printf 'ok run-header-while-open\n'
+}
+
+case_noncanonical_run_while_open() {
+  local status
+  new_case noncanonical-run-while-open
+  printf '%s\n' '' 'run "a" {' '  command = plan' 'run "b" { # c' '}' >> "${case_dir}/modules/cf-kv/tests/smoke.tftest.hcl"
+  git -C "${case_dir}" add -A
+  status=$(run_check noncanonical-run-while-open shim)
+  assert_status noncanonical-run-while-open "${status}" 1
+  assert_log_has noncanonical-run-while-open 'still open when the next run begins'
+  assert_no_shim noncanonical-run-while-open
+  printf 'ok noncanonical-run-while-open\n'
+}
+
+case_test_outside_discovery() {
+  local status
+  new_case test-outside-discovery
+  mkdir -p "${case_dir}/modules/cf-kv/fixtures"
+  printf '%s\n' 'run "applies" {' '}' > "${case_dir}/modules/cf-kv/fixtures/extra.tftest.hcl"
+  git -C "${case_dir}" add -A
+  status=$(run_check test-outside-discovery shim)
+  assert_status test-outside-discovery "${status}" 1
+  assert_log_has test-outside-discovery 'outside the module directory and tests/'
+  assert_no_shim test-outside-discovery
+  printf 'ok test-outside-discovery\n'
+}
+
+case_hidden_test_file() {
+  local status
+  new_case hidden-test-file
+  printf '%s\n' 'run "applies" {' '}' > "${case_dir}/modules/cf-kv/tests/.backup.tftest.hcl"
+  git -C "${case_dir}" add -A
+  status=$(run_check hidden-test-file shim)
+  assert_status hidden-test-file "${status}" 1
+  assert_log_lacks hidden-test-file 'profile refusal'
+  assert_shim hidden-test-file
+  printf 'ok hidden-test-file\n'
+}
+
+case_stem_collision() {
+  local status
+  new_case stem-collision
+  cp -- "${case_dir}/modules/cf-kv/tests/smoke.tftest.hcl" "${case_dir}/modules/cf-kv/tests/smoke.tofutest.hcl"
+  git -C "${case_dir}" add -A
+  status=$(run_check stem-collision shim)
+  assert_status stem-collision "${status}" 1
+  assert_log_has stem-collision 'share a test stem'
+  assert_no_shim stem-collision
+  printf 'ok stem-collision\n'
+}
+
 case_baseline
 case_slash_comment
 case_block_comment
+case_token_in_string
 case_second_fence
 case_indented_fence
 case_source_outside_module
@@ -364,10 +676,31 @@ case_run_without_plan
 case_env_allowlist
 case_tf_data_dir
 case_commented_module_header
+case_indented_module_header
+case_zero_space_module_header
 case_commented_run_header
+case_indented_run_header
+case_zero_space_run_header
+case_relative_plugin_cache
 case_json_test_file
 case_tf_cli_args
 case_untracked_gitattributes
 case_git_index_file
 case_relative_path
+case_block_commented_module
+case_heredoc_in_example
+case_trailing_brace_in_example
+case_unterminated_module
+case_module_header_while_open
+case_noncanonical_module_while_open
+case_interpolated_ref
+case_block_commented_plan
+case_heredoc_in_test
+case_trailing_brace_in_test
+case_unterminated_run
+case_run_header_while_open
+case_noncanonical_run_while_open
+case_test_outside_discovery
+case_hidden_test_file
+case_stem_collision
 printf 'check-modules tests: PASS\n'
