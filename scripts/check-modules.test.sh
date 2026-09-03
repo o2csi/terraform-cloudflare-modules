@@ -547,7 +547,7 @@ case_unicode_variable_name() {
 case_harness_clears_git_selectors() {
   local status
   new_case harness-clears-git-selectors
-  if (cd "${repo_root}" && GIT_INDEX_FILE="${case_dir}/ext-index" bash "${BASH_SOURCE[0]}" --prologue-only) > "${logs_dir}/harness-clears-git-selectors.log" 2>&1; then
+  if (cd "${repo_root}" && GIT_INDEX_FILE="${case_dir}/ext-index" bash "${script_path}" --prologue-only) > "${logs_dir}/harness-clears-git-selectors.log" 2>&1; then
     status=0
   else
     status=$?
@@ -555,6 +555,33 @@ case_harness_clears_git_selectors() {
   assert_status harness-clears-git-selectors "${status}" 0
   [[ ! -e "${case_dir}/ext-index" ]] || fail_case harness-clears-git-selectors 'prologue wrote GIT_INDEX_FILE'
   printf 'ok harness-clears-git-selectors\n'
+}
+
+case_block_comment_before_declaration() {
+  local status
+  new_case block-comment-before-declaration
+  printf '%s\n' '/* c */ output "hidden" {' '  description = "x"' '  value = 1' '}' > "${case_dir}/modules/cf-kv/extra.tf"
+  git -C "${case_dir}" add -A
+  status=$(run_check block-comment-before-declaration shim)
+  assert_status block-comment-before-declaration "${status}" 1
+  assert_log_has block-comment-before-declaration 'modules/cf-kv/extra.tf contains /* outside a string'
+  assert_no_shim block-comment-before-declaration
+  printf 'ok block-comment-before-declaration\n'
+}
+
+case_unicode_variable_name_locale() {
+  local status
+  new_case unicode-variable-name-locale
+  printf '%s\n' 'variable "é" {' '  description = "documented variable"' '}' > "${case_dir}/modules/cf-kv/variables.tf"
+  git -C "${case_dir}" add -A
+  # If en_US.UTF-8 is unavailable, Bash warns and falls back; the refusal still passes.
+  export LC_ALL=en_US.UTF-8
+  status=$(run_check unicode-variable-name-locale shim)
+  unset LC_ALL
+  assert_status unicode-variable-name-locale "${status}" 1
+  assert_log_has unicode-variable-name-locale 'profile refusal: modules/cf-kv/variables.tf line 1: an interface header is exactly variable "<name>" { or output "<name>" { with an ASCII identifier'
+  assert_no_shim unicode-variable-name-locale
+  printf 'ok unicode-variable-name-locale\n'
 }
 
 case_relative_path() {
@@ -807,6 +834,8 @@ case_output_in_extra_tf
 case_indented_variable_header
 case_unicode_variable_name
 case_harness_clears_git_selectors
+case_block_comment_before_declaration
+case_unicode_variable_name_locale
 case_relative_path
 case_block_commented_module
 case_heredoc_in_example

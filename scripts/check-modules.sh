@@ -189,19 +189,22 @@ for module_dir in "${module_dirs[@]}"; do
         fail "profile refusal: ${module_file} is a .tofu or JSON configuration file; the check reads .tf files only"
         ;;
     esac
+    if [[ "${file_name}" == *.tf ]] && token_outside_strings "${module_file}" '/*'; then
+      fail "profile refusal: ${module_file} contains /* outside a string; the check keeps a fixed shape"
+    fi
     if [[ "${file_name}" == variables.tf || "${file_name}" == outputs.tf ]]; then
-      if interface_headers=$(grep -nE '^[[:space:]]*(variable|output)[[:space:]]*"' "${module_file}"); then
+      if grep -nE '^[[:space:]]*(variable|output)[[:space:]]*"' "${module_file}" > "${tmp_dir}/interface-headers"; then
         while IFS= read -r interface_header; do
           line_number=${interface_header%%:*}
           header=${interface_header#*:}
-          [[ "${header}" =~ ^(variable|output)\ \"[A-Za-z_][A-Za-z0-9_-]*\"\ \{$ ]] || fail "profile refusal: ${module_file} line ${line_number}: an interface header is exactly variable \"<name>\" { or output \"<name>\" { with an ASCII identifier"
-        done <<< "${interface_headers}"
+          [[ "${header}" =~ ^(variable|output)\ \"[ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_][ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_0123456789-]*\"\ \{$ ]] || fail "profile refusal: ${module_file} line ${line_number}: an interface header is exactly variable \"<name>\" { or output \"<name>\" { with an ASCII identifier"
+        done < "${tmp_dir}/interface-headers"
       else
         status=$?
         [[ "${status}" -eq 1 ]] || fail "grep failed for ${module_file} (status ${status})"
       fi
     elif [[ "${file_name}" == *.tf ]]; then
-      if declaration_headers=$(grep -nE '^[[:space:]]*(variable|output)[[:space:]]*"' "${module_file}"); then
+      if declaration_headers=$(grep -m1 -nE '^[[:space:]]*(variable|output)[[:space:]]*"' "${module_file}"); then
         line_number=${declaration_headers%%:*}
         fail "assertion 3: ${module_file} line ${line_number} declares a variable or output outside variables.tf and outputs.tf"
       else
