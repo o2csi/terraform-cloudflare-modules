@@ -1,0 +1,44 @@
+name: Check modules
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-modules-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check-modules:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      # On pull requests, checkout uses GitHub's merge ref, judging the prospective merge into main.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: 1.12.6
+          tofu_wrapper: false
+      - name: Make the collating locale available
+        run: |
+          locale -a | grep -qx 'en_US.utf8' || sudo locale-gen en_US.UTF-8
+          locale -a | grep -qx 'en_US.utf8'
+      # No provider lock file is maintained: every init selects the newest Cloudflare provider matching ~> 5.0.
+      # This is a freshness check, so a registry outage or a breaking matching provider release makes CI fail.
+      - name: Check modules
+        run: scripts/check-modules.sh
+      - name: Run check-modules harness
+        run: |
+          set -o pipefail
+          scripts/check-modules.test.sh 2>&1 | tee harness.log
+      - name: Verify harness completed without skips
+        run: |
+          if grep -q '^skip ' harness.log; then echo 'a harness case was skipped'; exit 1; fi
+          grep -qxF 'check-modules tests: PASS' harness.log
