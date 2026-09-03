@@ -1,18 +1,24 @@
 #!/usr/bin/env bash
-# This check accepts a fixed shape: top-level blocks begin at column 0; no heredoc; no block comment in
-# variables.tf or outputs.tf; no line-leading block comment in a README example; README fences begin at column 0;
-# each README has one hcl fence and one top-level module block; a line starting with module in an extracted example,
-# or run in a test file, must be exactly module "<name>" { / run "<name>" {; a run block must carry command = plan;
-# and JSON test files are refused. These scans are lexical: they recognize the canonical spelling and refuse others
-# they can see; they are not an HCL parser and do not prove what tofu will execute.
+# This check accepts a fixed shape: module and run headers and their closing lines begin at column 0 (other blocks
+# are not parsed); the token sequences << and /* are refused anywhere in variables.tf and outputs.tf, and outside
+# double-quoted strings in a README example and a test file; a closing line is exactly } at column 0 (a lexical
+# convention, nesting is not parsed); README
+# fences begin at column 0; each module README has one hcl fence and one module block; a line starting with module
+# in an example, or run in a test file, is exactly module "<name>" { / run "<name>" {, does not arrive while a block
+# is open, and every block closes before end of file; a run block carries command = plan; JSON test files are refused;
+# a test file is one tofu test discovers (the module directory and tests/), and a same-directory .tftest/.tofutest
+# stem collision is refused; the example's ?ref= is a literal ref token that git check-ref-format accepts. These scans
+# are lexical: they recognize the canonical spellings and refuse what they can see; they are not an HCL parser. They
+# require GNU awk and GNU coreutils.
 # The check judges an export of the Git index written to ${tmp_dir}/index, with .gitattributes taken from the index
 # tree (git --attr-source), and with GIT_DIR, GIT_INDEX_FILE and the other repository-selection variables cleared.
 # git add what you want checked: untracked, ignored, and unstaged content is not read, while indexed but uncommitted
 # content is. Git configuration (core.autocrlf, filters, info/attributes) still applies as you configured it.
-# Every tofu invocation runs through run_tofu, with an environment of exactly PATH, HOME (an empty directory under
-# the temporary directory), TMPDIR and TF_PLUGIN_CACHE_DIR: none of your credentials, CLI configuration, mirrors,
-# proxies or TF_* variables is inherited, so an honest mistake (a run that applies, a filter in TF_CLI_ARGS_test)
-# cannot use them. This is not a sandbox: staged content — this script included — runs at your privilege and can read
+# Every tofu invocation runs through run_tofu, with an environment of exactly PATH (yours), HOME (an empty directory
+# under the temporary directory), TMPDIR (the temporary directory) and TF_PLUGIN_CACHE_DIR (yours, or a default under
+# the temporary directory); no other variable is inherited, so none of your credentials, CLI configuration, mirrors
+# or proxies is available, and no TF_* variable other than TF_PLUGIN_CACHE_DIR reaches tofu. An honest mistake (a run that applies, a filter in TF_CLI_ARGS_test) cannot
+# use them. This is not a sandbox: staged content — this script included — runs at your privilege and can read
 # your files and processes. Run the check only on a branch you would run a script from.
 # Without a lock file, tofu init selects the newest registry release satisfying ~> 5.0 — a freshness sentinel, not a
 # reproducible build — and runs it at your privilege; a mirror configured in your CLI configuration is not used.
@@ -40,6 +46,59 @@ grep_answer() {
   fail "grep failed for ${file} (status ${status})"
 }
 
+token_outside_strings() {
+  local file=$1 token=$2 statuses
+  if sed -E 's/"([^"\\]|\\.)*"//g' -- "${file}" | grep -nF -- "${token}"; then
+    return 0
+  else
+    statuses=("${PIPESTATUS[@]}")
+  fi
+  [[ "${statuses[0]}" -eq 0 ]] || fail "sed failed for ${file} (status ${statuses[0]})"
+  [[ "${statuses[1]}" -eq 1 ]] && return 1
+  fail "grep failed for ${file} (status ${statuses[1]})"
+}
+
+run_scan() {
+  local label=$1 err_file=$2 awk_program=$3 input=$4 stdout_file=${5:-} status
+  : > "${err_file}" || fail "could not prepare ${label} scan diagnostics"
+  if [[ -n "${stdout_file}" ]]; then
+    if awk "${awk_program}" "${input}" > "${stdout_file}" 2> "${err_file}"; then
+      return 0
+    else
+      status=$?
+    fi
+  else
+    if awk "${awk_program}" "${input}" 2> "${err_file}"; then
+      return 0
+    else
+      status=$?
+    fi
+  fi
+  return "${status}"
+}
+
+# Sets profile_record/profile_records. Its stdout is the first protocol record, if any.
+profile_marker() {
+  local err_file=$1 records status line
+  profile_record=''
+  profile_records=0
+  if records=$(grep -E '^PROFILE:[a-z-]+(:.*)?$' "${err_file}"); then
+    :
+  else
+    status=$?
+    [[ "${status}" -eq 1 ]] || return "${status}"
+    records=''
+  fi
+  if [[ -n "${records}" ]]; then
+    while IFS= read -r line; do
+      profile_records=$((profile_records + 1))
+      [[ -n "${profile_record}" ]] || profile_record=${line}
+    done <<< "${records}"
+  fi
+  [[ "${profile_records}" -le 1 ]] || return 2
+  [[ -z "${profile_record}" ]] || printf '%s\n' "${profile_record}"
+}
+
 run_tofu() {
   "${env_bin}" -i PATH="${PATH}" HOME="${tmp_dir}/home" TMPDIR="${tmp_dir}" TF_PLUGIN_CACHE_DIR="${TF_PLUGIN_CACHE_DIR}" "${tofu_bin}" "$@"
 }
@@ -62,7 +121,8 @@ cleanup() {
 }
 trap cleanup EXIT
 tmp_dir=$(mktemp -d) || fail "could not create a temporary directory"
-tmp_dir=$(readlink -f -- "${tmp_dir}") || fail "could not canonicalize the temporary directory"
+canonical_tmp_dir=$(readlink -f -- "${tmp_dir}") || fail "could not canonicalize the temporary directory"
+tmp_dir=${canonical_tmp_dir}
 
 # The export lives in ${tmp_dir}/index; generated examples and the cache are siblings, then the check cd's into it.
 index_dir="${tmp_dir}/index"
@@ -155,10 +215,11 @@ for module_dir in "${module_dirs[@]}"; do
   readme="${module_dir}/README.md"
   example_dir="${tmp_dir}/examples/${module}"
   mkdir -p "${example_dir}" || fail "could not create ${example_dir}"
-  if awk '
+  scan_err="${example_dir}/fence.err"
+  if run_scan fence "${scan_err}" '
     /^ (```|~~~)/ || /^  (```|~~~)/ || /^   (```|~~~)/ {
-      indented = 1
-      exit 2
+      outcome = "indented-fence"
+      exit
     }
     !in_block && /^(```|~~~)/ {
       if ($0 == "```hcl" && !seen) {
@@ -166,8 +227,8 @@ for module_dir in "${module_dirs[@]}"; do
         seen = 1
         next
       }
-      failed = 1
-      exit 1
+      outcome = "fence-structure"
+      exit
     }
     in_block && /^```$/ {
       in_block = 0
@@ -176,23 +237,36 @@ for module_dir in "${module_dirs[@]}"; do
     }
     in_block { print }
     END {
-      if (indented) exit 2
-      if (failed || !seen || in_block || !closed) exit 1
+      if (outcome == "" && (!seen || in_block || !closed)) outcome = "fence-structure"
+      if (outcome != "") {
+        print "PROFILE:" outcome > "/dev/stderr"
+        exit 1
+      }
     }
-  ' "${readme}" > "${example_dir}/main.tf"; then
+  ' "${readme}" "${example_dir}/main.tf"; then
     :
   else
     fence_status=$?
-    if [[ "${fence_status}" -eq 2 ]]; then
+    if ! profile_marker "${scan_err}" >/dev/null; then
+      fail "could not scan ${readme}: ${profile_records} profile records"
+    fi
+    if [[ -z "${profile_record}" ]]; then
+      cat -- "${scan_err}" >&2
+      fail "could not scan ${readme} (awk exit ${fence_status})"
+    fi
+    if [[ "${profile_record}" == 'PROFILE:indented-fence' ]]; then
       fail "profile refusal: ${readme} has an indented fence; the check keeps a fixed shape"
     fi
     fail "assertion 6: ${module} README must contain exactly one complete hcl fence and no other fence"
   fi
-  if grep_answer "${example_dir}/main.tf" -nF '<<'; then
+  if token_outside_strings "${example_dir}/main.tf" '<<'; then
     fail "profile refusal: ${readme} extracted example contains <<; the check keeps a fixed shape"
   fi
-  if grep_answer "${example_dir}/main.tf" -nE '^[[:space:]]*/\*'; then
-    fail "profile refusal: ${readme} extracted example contains line-leading /*; the check keeps a fixed shape"
+  if token_outside_strings "${example_dir}/main.tf" '/*'; then
+    fail "profile refusal: ${readme} extracted example contains /*; the check keeps a fixed shape"
+  fi
+  if grep_answer "${example_dir}/main.tf" -nE '^\}.'; then
+    fail "profile refusal: ${readme} extracted example has a closing line followed by text; the check keeps a fixed shape"
   fi
 done
 
@@ -200,8 +274,10 @@ source_pattern='^[[:space:]]*source[[:space:]]*=[[:space:]]*"git::https://github
 for module_dir in "${module_dirs[@]}"; do
   module=${module_dir##*/}
   example_dir="${tmp_dir}/examples/${module}"
-  if source_line=$(awk '
-    /^module / && !/^module "[^"]+" \{$/ { print; noncanonical = 1; exit 3 }
+  scan_err="${example_dir}/module.err"
+  if source_line=$(run_scan module "${scan_err}" '
+    /^module / && in_module { outcome = "module-open"; exit }
+    /^module / && !/^module "[^"]+" \{$/ { outcome = "module-noncanonical:" $0; exit }
     /^module "[^"]+" \{$/ { module_count++; in_module = 1; next }
     in_module && /^\}$/ { in_module = 0; next }
     in_module && /^[[:space:]]*source[[:space:]]*=[[:space:]]*"git::https:\/\/github.com\/o2csi\/terraform-cloudflare-modules\.git\/\/modules\/[a-z0-9-]+\?ref=[^"]+"[[:space:]]*$/ {
@@ -209,16 +285,38 @@ for module_dir in "${module_dirs[@]}"; do
       source_line = $0
     }
     END {
-      if (noncanonical) exit 3
-      if (module_count != 1 || source_count != 1) exit 1
+      if (outcome == "" && in_module) outcome = "module-unclosed"
+      if (outcome == "" && (module_count != 1 || source_count != 1)) outcome = "module-structure"
+      if (outcome != "") {
+        print "PROFILE:" outcome > "/dev/stderr"
+        exit 1
+      }
       print source_line
     }
   ' "${example_dir}/main.tf"); then
     :
   else
     module_status=$?
-    if [[ "${module_status}" -eq 3 ]]; then
-      fail "profile refusal: ${readme} example has a non-canonical module header: ${source_line}; the check keeps a fixed shape"
+    if ! profile_marker "${scan_err}" >/dev/null; then
+      fail "could not scan ${example_dir}/main.tf: ${profile_records} profile records"
+    fi
+    if [[ -z "${profile_record}" ]]; then
+      cat -- "${scan_err}" >&2
+      fail "could not scan ${example_dir}/main.tf (awk exit ${module_status})"
+    fi
+    case "${profile_record}" in
+      PROFILE:module-noncanonical:*)
+        fail "profile refusal: ${readme} example has a non-canonical module header: ${profile_record#PROFILE:module-noncanonical:}; the check keeps a fixed shape"
+        ;;
+      PROFILE:module-open)
+        fail "profile refusal: ${readme} example has a module header while the previous block is open; the check keeps a fixed shape"
+        ;;
+      PROFILE:module-unclosed)
+        fail "profile refusal: ${readme} example has an unclosed module block; the check keeps a fixed shape"
+        ;;
+    esac
+    if [[ "${profile_record}" != 'PROFILE:module-structure' ]]; then
+      fail "could not scan ${example_dir}/main.tf (unknown profile outcome ${profile_record})"
     fi
     fail "assertion 6: ${module} README example: source must be inside the single module block"
   fi
@@ -229,19 +327,43 @@ for module_dir in "${module_dirs[@]}"; do
   source_module=${source_name_and_ref%%\?ref=*}
   source_ref=${source_name_and_ref#*\?ref=}
   [[ "${source_module}" == "${module}" && -n "${source_ref}" ]] || fail "assertion 6: ${module} README has no module source ending in //modules/${module}?ref=<something>\""
+  [[ "${source_ref}" =~ ^[A-Za-z0-9._/][A-Za-z0-9._/-]*$ ]] && git check-ref-format --allow-onelevel "${source_ref}" >/dev/null 2>&1 || fail "assertion 6: ${module} README example ref is not a literal Git reference: ${source_ref}"
 done
 
-if ! find modules -type f \( -name '*.tftest.hcl' -o -name '*.tofutest.hcl' -o -name '*.tftest.json' -o -name '*.tofutest.json' \) -print0 > "${tmp_dir}/test-files"; then
-  fail "could not enumerate test files"
-fi
+test_manifest="${tmp_dir}/test-files"
+: > "${test_manifest}" || fail "could not prepare test manifest"
+for module_dir in "${module_dirs[@]}"; do
+  if ! find "${module_dir}" -mindepth 1 -maxdepth 1 -type f \( -name '*.tftest.hcl' -o -name '*.tofutest.hcl' -o -name '*.tftest.json' -o -name '*.tofutest.json' \) -print0 >> "${test_manifest}"; then
+    fail "could not enumerate test files"
+  fi
+  if [[ -d "${module_dir}/tests" ]] && ! find "${module_dir}/tests" -mindepth 1 -maxdepth 1 -type f \( -name '*.tftest.hcl' -o -name '*.tofutest.hcl' -o -name '*.tftest.json' -o -name '*.tofutest.json' \) -print0 >> "${test_manifest}"; then
+    fail "could not enumerate test files"
+  fi
+done
 while IFS= read -r -d '' test_file; do
   case "${test_file}" in
     *.tftest.json|*.tofutest.json)
       fail "profile refusal: ${test_file} is a JSON test file; the check keeps a fixed shape"
       ;;
   esac
-  if missing_run=$(awk '
-    /^run / && !/^run "[^"]+" \{$/ { print; noncanonical = 1; exit 3 }
+  test_dir=${test_file%/*}
+  test_name=${test_file##*/}
+  if [[ "${test_name}" =~ ^(.+)\.tftest\.(hcl|json)$ ]] && [[ -f "${test_dir}/${BASH_REMATCH[1]}.tofutest.${BASH_REMATCH[2]}" ]]; then
+    fail "profile refusal: ${test_file} and ${test_dir}/${BASH_REMATCH[1]}.tofutest.${BASH_REMATCH[2]} share a test stem; tofu test runs only the tofutest file; the check keeps a fixed shape"
+  fi
+  if token_outside_strings "${test_file}" '<<'; then
+    fail "profile refusal: ${test_file} contains <<; the check keeps a fixed shape"
+  fi
+  if token_outside_strings "${test_file}" '/*'; then
+    fail "profile refusal: ${test_file} contains /*; the check keeps a fixed shape"
+  fi
+  if grep_answer "${test_file}" -nE '^\}.'; then
+    fail "profile refusal: ${test_file} has a closing line followed by text; the check keeps a fixed shape"
+  fi
+  scan_err="${tmp_dir}/run.err"
+  if missing_run=$(run_scan run "${scan_err}" '
+    /^run / && in_run { outcome = "run-open:" run_name; exit }
+    /^run / && !/^run "[^"]+" \{$/ { outcome = "run-noncanonical:" $0; exit }
     /^run "[^"]+" \{$/ {
       in_run = 1
       run_name = $0
@@ -253,30 +375,48 @@ while IFS= read -r -d '' test_file; do
     in_run && /^  command[[:space:]]*=[[:space:]]*plan$/ { has_plan = 1; next }
     in_run && /^\}$/ {
       if (!has_plan) {
-        print run_name
-        failed = 1
-        exit 1
+        outcome = "run-noplan:" run_name
+        exit
       }
       in_run = 0
     }
     END {
-      if (noncanonical) exit 3
-      if (!failed && in_run && !has_plan) {
-        print run_name
-        failed = 1
+      if (outcome == "" && in_run) outcome = "run-unclosed:" run_name
+      if (outcome != "") {
+        print "PROFILE:" outcome > "/dev/stderr"
+        exit 1
       }
-      if (failed) exit 1
     }
   ' "${test_file}"); then
     :
   else
     run_status=$?
-    if [[ "${run_status}" -eq 3 ]]; then
-      fail "profile refusal: ${test_file} has a non-canonical run header: ${missing_run}; the check keeps a fixed shape"
+    if ! profile_marker "${scan_err}" >/dev/null; then
+      fail "could not scan ${test_file}: ${profile_records} profile records"
     fi
-    fail "profile refusal: ${test_file} run \"${missing_run}\" has no command = plan; the check keeps a fixed shape"
+    if [[ -z "${profile_record}" ]]; then
+      cat -- "${scan_err}" >&2
+      fail "could not scan ${test_file} (awk exit ${run_status})"
+    fi
+    case "${profile_record}" in
+      PROFILE:run-noncanonical:*)
+        fail "profile refusal: ${test_file} has a non-canonical run header: ${profile_record#PROFILE:run-noncanonical:}; the check keeps a fixed shape"
+        ;;
+      PROFILE:run-open:*)
+        fail "profile refusal: ${test_file} has run \"${profile_record#PROFILE:run-open:}\" still open when the next run begins; the check keeps a fixed shape"
+        ;;
+      PROFILE:run-unclosed:*)
+        fail "profile refusal: ${test_file} has run \"${profile_record#PROFILE:run-unclosed:}\" unclosed at end of file; the check keeps a fixed shape"
+        ;;
+      PROFILE:run-noplan:*)
+        fail "profile refusal: ${test_file} run \"${profile_record#PROFILE:run-noplan:}\" has no command = plan; the check keeps a fixed shape"
+        ;;
+      *)
+        fail "could not scan ${test_file} (unknown profile outcome ${profile_record})"
+        ;;
+    esac
   fi
-done < "${tmp_dir}/test-files"
+done < "${test_manifest}"
 
 export TF_PLUGIN_CACHE_DIR="${TF_PLUGIN_CACHE_DIR:-${tmp_dir}/plugin-cache}"
 mkdir -p "${TF_PLUGIN_CACHE_DIR}" || fail "could not create TF_PLUGIN_CACHE_DIR: ${TF_PLUGIN_CACHE_DIR}"
