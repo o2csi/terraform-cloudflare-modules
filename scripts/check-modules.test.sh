@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# This test requires GNU coreutils and sed (readlink -f, sed -i).
 
 set -euo pipefail
 
@@ -7,7 +8,14 @@ repo_root=$(dirname "$(dirname "${script_path}")")
 cd "${repo_root}" || { printf 'FAIL: setup: cannot change to the repository root\n' >&2; exit 1; }
 
 test_root=$(mktemp -d) || { printf 'FAIL: setup: cannot create temporary directory\n' >&2; exit 1; }
-cleanup() { rm -rf -- "${test_root}"; }
+cleanup() {
+  local status=$?
+  if ! rm -rf -- "${test_root}"; then
+    printf 'check-modules.test.sh: could not remove temporary directory: %s\n' "${test_root}" >&2
+    [[ "${status}" -eq 0 ]] && exit 1
+  fi
+  exit "${status}"
+}
 trap cleanup EXIT
 
 base_fixture="${test_root}/base"
@@ -16,7 +24,8 @@ shim_dir="${test_root}/shim"
 real_path=${PATH}
 mkdir -p "${base_fixture}/scripts" "${base_fixture}/modules/cf-kv/tests" "${logs_dir}" "${shim_dir}"
 
-cp -- scripts/check-modules.sh "${base_fixture}/scripts/check-modules.sh"
+check_modules_script=${CHECK_MODULES_SCRIPT:-scripts/check-modules.sh}
+cp -- "${check_modules_script}" "${base_fixture}/scripts/check-modules.sh"
 for fixture_file in README.md main.tf variables.tf outputs.tf versions.tf; do
   cp -- "modules/cf-kv/${fixture_file}" "${base_fixture}/modules/cf-kv/${fixture_file}"
 done
@@ -43,6 +52,14 @@ chmod +x "${shim_dir}/tofu"
 
 fail_case() {
   printf 'FAIL: %s: %s\n' "$1" "$2" >&2
+  if [[ -s "${logs_dir}/$1.log" ]]; then
+    printf -- '--- %s.log ---\n' "$1" >&2
+    cat -- "${logs_dir}/$1.log" >&2
+  fi
+  if [[ -s "${logs_dir}/$1.shim.log" ]]; then
+    printf -- '--- %s.shim.log ---\n' "$1" >&2
+    cat -- "${logs_dir}/$1.shim.log" >&2
+  fi
   exit 1
 }
 
@@ -72,6 +89,10 @@ assert_log_has() {
 
 assert_log_lacks() {
   ! grep -Fq -- "$2" "${logs_dir}/$1.log" || fail_case "$1" "unexpected log substring: $2"
+}
+
+assert_log_matches() {
+  grep -Eq -- "$2" "${logs_dir}/$1.log" || fail_case "$1" "missing log pattern: $2"
 }
 
 assert_no_shim() {
@@ -199,6 +220,52 @@ case_tf_data_dir() {
   [[ -z "$(git -C "${case_dir}" status --porcelain --ignored)" ]] || fail_case tf-data-dir 'fixture work tree changed'
 }
 
+case_commented_module_header() {
+  local status
+  new_case commented-module-header
+  sed -i '/^```$/i\
+module "extra" { # comment\
+  source = "./x"\
+}' "${case_dir}/modules/cf-kv/README.md"
+  git -C "${case_dir}" add -A
+  status=$(run_check commented-module-header shim)
+  assert_status commented-module-header "${status}" 1
+  assert_log_has commented-module-header 'non-canonical module header'
+  assert_no_shim commented-module-header
+}
+
+case_commented_run_header() {
+  local status
+  new_case commented-run-header
+  printf '%s\n' '' 'run "applies" { # comment' '}' >> "${case_dir}/modules/cf-kv/tests/smoke.tftest.hcl"
+  git -C "${case_dir}" add -A
+  status=$(run_check commented-run-header shim)
+  assert_status commented-run-header "${status}" 1
+  assert_log_has commented-run-header 'non-canonical run header'
+  assert_no_shim commented-run-header
+}
+
+case_json_test_file() {
+  local status
+  new_case json-test-file
+  printf '%s\n' '{}' > "${case_dir}/modules/cf-kv/tests/extra.tftest.json"
+  git -C "${case_dir}" add -A
+  status=$(run_check json-test-file shim)
+  assert_status json-test-file "${status}" 1
+  assert_log_has json-test-file 'is a JSON test file'
+  assert_no_shim json-test-file
+}
+
+case_tf_cli_args() {
+  local status
+  new_case tf-cli-args
+  export TF_CLI_ARGS_test=-filter=modules/cf-kv/tests/nonexistent.tftest.hcl
+  status=$(run_check tf-cli-args real)
+  unset TF_CLI_ARGS_test
+  assert_status tf-cli-args "${status}" 0
+  assert_log_matches tf-cli-args 'run "plans"\.\.\. pass'
+}
+
 case_baseline
 case_slash_comment
 case_block_comment
@@ -210,4 +277,8 @@ case_untracked_then_staged
 case_unstaged_edit
 case_run_without_plan
 case_tf_data_dir
+case_commented_module_header
+case_commented_run_header
+case_json_test_file
+case_tf_cli_args
 printf 'check-modules tests: PASS\n'

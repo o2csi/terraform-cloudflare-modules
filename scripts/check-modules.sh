@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # This check accepts a fixed shape: top-level blocks begin at column 0; no heredoc; no block comment in
 # variables.tf or outputs.tf; no line-leading block comment in a README example; README fences begin at column 0;
-# each README has one hcl fence and one top-level module block; and top-level test run blocks have command = plan.
+# each README has one hcl fence and one top-level module block; module and run headers are written exactly
+# module "<name>" { / run "<name>" {; top-level test run blocks have command = plan; and JSON test files are refused.
 # It judges an export of the Git index written to ${tmp_dir}/index: git add what you want checked, because untracked,
 # ignored, and unstaged content is not read, while indexed but uncommitted content is. Every lexical assertion runs
-# before any tofu call. TF_DATA_DIR is unset and TF_PLUGIN_CACHE_DIR defaults under the temporary directory, so the
-# default writes nothing under the checkout. Without a lock file, tofu init selects the newest registry release
+# before any tofu call. TF_DATA_DIR, TF_CLI_ARGS, TF_CLI_ARGS_fmt, TF_CLI_ARGS_init, TF_CLI_ARGS_validate, and
+# TF_CLI_ARGS_test are unset, and TF_PLUGIN_CACHE_DIR defaults under the temporary directory, so the default writes
+# nothing under the checkout. Without a lock file, tofu init selects the newest registry release
 # satisfying ~> 5.0 (subject to registry availability and plugin-cache reuse) and runs it at the caller's privilege:
 # this is a freshness sentinel for schema drift, not a reproducible build. scripts/check-modules.test.sh exercises refusals.
 set -euo pipefail
@@ -183,6 +185,7 @@ for module_dir in "${module_dirs[@]}"; do
   module=${module_dir##*/}
   example_dir="${tmp_dir}/examples/${module}"
   if source_line=$(awk '
+    /^module / && !/^module "[^"]+" \{$/ { print; noncanonical = 1; exit 3 }
     /^module "[^"]+" \{$/ { module_count++; in_module = 1; next }
     in_module && /^\}$/ { in_module = 0; next }
     in_module && /^[[:space:]]*source[[:space:]]*=[[:space:]]*"git::https:\/\/github.com\/o2csi\/terraform-cloudflare-modules\.git\/\/modules\/[a-z0-9-]+\?ref=[^"]+"[[:space:]]*$/ {
@@ -190,12 +193,17 @@ for module_dir in "${module_dirs[@]}"; do
       source_line = $0
     }
     END {
+      if (noncanonical) exit 3
       if (module_count != 1 || source_count != 1) exit 1
       print source_line
     }
   ' "${example_dir}/main.tf"); then
     :
   else
+    module_status=$?
+    if [[ "${module_status}" -eq 3 ]]; then
+      fail "profile refusal: ${readme} example has a non-canonical module header: ${source_line}; the check keeps a fixed shape"
+    fi
     fail "assertion 6: ${module} README example: source must be inside the single module block"
   fi
   [[ "${source_line}" =~ ${source_pattern} ]] || fail "assertion 6: ${module} README has no module source ending in //modules/${module}?ref=<something>\""
@@ -207,8 +215,17 @@ for module_dir in "${module_dirs[@]}"; do
   [[ "${source_module}" == "${module}" && -n "${source_ref}" ]] || fail "assertion 6: ${module} README has no module source ending in //modules/${module}?ref=<something>\""
 done
 
+if ! find modules -type f \( -name '*.tftest.hcl' -o -name '*.tofutest.hcl' -o -name '*.tftest.json' -o -name '*.tofutest.json' \) -print0 > "${tmp_dir}/test-files"; then
+  fail "could not enumerate test files"
+fi
 while IFS= read -r -d '' test_file; do
+  case "${test_file}" in
+    *.tftest.json|*.tofutest.json)
+      fail "profile refusal: ${test_file} is a JSON test file; the check keeps a fixed shape"
+      ;;
+  esac
   if missing_run=$(awk '
+    /^run / && !/^run "[^"]+" \{$/ { print; noncanonical = 1; exit 3 }
     /^run "[^"]+" \{$/ {
       in_run = 1
       run_name = $0
@@ -227,6 +244,7 @@ while IFS= read -r -d '' test_file; do
       in_run = 0
     }
     END {
+      if (noncanonical) exit 3
       if (!failed && in_run && !has_plan) {
         print run_name
         failed = 1
@@ -236,11 +254,15 @@ while IFS= read -r -d '' test_file; do
   ' "${test_file}"); then
     :
   else
+    run_status=$?
+    if [[ "${run_status}" -eq 3 ]]; then
+      fail "profile refusal: ${test_file} has a non-canonical run header: ${missing_run}; the check keeps a fixed shape"
+    fi
     fail "profile refusal: ${test_file} run \"${missing_run}\" has no command = plan; the check keeps a fixed shape"
   fi
-done < <(find modules -type f \( -name '*.tftest.hcl' -o -name '*.tofutest.hcl' \) -print0)
+done < "${tmp_dir}/test-files"
 
-unset TF_DATA_DIR
+unset TF_DATA_DIR TF_CLI_ARGS TF_CLI_ARGS_fmt TF_CLI_ARGS_init TF_CLI_ARGS_validate TF_CLI_ARGS_test
 export TF_PLUGIN_CACHE_DIR="${TF_PLUGIN_CACHE_DIR:-${tmp_dir}/plugin-cache}"
 mkdir -p "${TF_PLUGIN_CACHE_DIR}" || fail "could not create TF_PLUGIN_CACHE_DIR: ${TF_PLUGIN_CACHE_DIR}"
 
