@@ -6,8 +6,9 @@
 # fences begin at column 0; each module README has one hcl fence and one module block; a line starting with module
 # in an example, or run in a test file, is exactly module "<name>" { / run "<name>" {, does not arrive while a block
 # is open, and every block closes before end of file; a run block carries command = plan; JSON test files are refused;
-# a test file is one tofu test discovers (the module directory and tests/), and a same-directory .tftest/.tofutest
-# stem collision is refused; the example's ?ref= is a literal ref token that git check-ref-format accepts. These scans
+# a test file is one tofu test discovers (the module directory and tests/); a test-suffixed file elsewhere under a
+# module is refused; dot-prefixed files are ignored; and a same-directory .tftest/.tofutest stem collision is refused;
+# the example's ?ref= is a literal ref token that git check-ref-format accepts. These scans
 # are lexical: they recognize the canonical spellings and refuse what they can see; they are not an HCL parser. They
 # require GNU awk and GNU coreutils.
 # The check judges an export of the Git index written to ${tmp_dir}/index, with .gitattributes taken from the index
@@ -37,7 +38,7 @@ fail() {
 grep_answer() {
   local file=$1 status
   shift
-  if grep "$@" "${file}"; then
+  if grep "$@" "${file}" > /dev/null; then
     return 0
   else
     status=$?
@@ -48,7 +49,7 @@ grep_answer() {
 
 token_outside_strings() {
   local file=$1 token=$2 statuses
-  if sed -E 's/"([^"\\]|\\.)*"//g' -- "${file}" | grep -nF -- "${token}"; then
+  if sed -E 's/"([^"\\]|\\.)*"//g' -- "${file}" | grep -nF -- "${token}" > /dev/null; then
     return 0
   else
     statuses=("${PIPESTATUS[@]}")
@@ -273,11 +274,12 @@ done
 source_pattern='^[[:space:]]*source[[:space:]]*=[[:space:]]*"git::https://github.com/o2csi/terraform-cloudflare-modules\.git//modules/[a-z0-9-]+\?ref=[^"]+"[[:space:]]*$'
 for module_dir in "${module_dirs[@]}"; do
   module=${module_dir##*/}
+  readme="${module_dir}/README.md"
   example_dir="${tmp_dir}/examples/${module}"
   scan_err="${example_dir}/module.err"
   if source_line=$(run_scan module "${scan_err}" '
-    /^module / && in_module { outcome = "module-open"; exit }
-    /^module / && !/^module "[^"]+" \{$/ { outcome = "module-noncanonical:" $0; exit }
+    /^[[:space:]]*module[[:space:]]+"/ && in_module { outcome = "module-open"; exit }
+    /^[[:space:]]*module[[:space:]]+"/ && !/^module "[^"]+" \{$/ { outcome = "module-noncanonical:" $0; exit }
     /^module "[^"]+" \{$/ { module_count++; in_module = 1; next }
     in_module && /^\}$/ { in_module = 0; next }
     in_module && /^[[:space:]]*source[[:space:]]*=[[:space:]]*"git::https:\/\/github.com\/o2csi\/terraform-cloudflare-modules\.git\/\/modules\/[a-z0-9-]+\?ref=[^"]+"[[:space:]]*$/ {
@@ -333,11 +335,17 @@ done
 test_manifest="${tmp_dir}/test-files"
 : > "${test_manifest}" || fail "could not prepare test manifest"
 for module_dir in "${module_dirs[@]}"; do
-  if ! find "${module_dir}" -mindepth 1 -maxdepth 1 -type f \( -name '*.tftest.hcl' -o -name '*.tofutest.hcl' -o -name '*.tftest.json' -o -name '*.tofutest.json' \) -print0 >> "${test_manifest}"; then
+  if ! find "${module_dir}" -type f ! -name '.*' \( -name '*.tftest.hcl' -o -name '*.tofutest.hcl' -o -name '*.tftest.json' -o -name '*.tofutest.json' \) -print0 > "${tmp_dir}/module-test-files"; then
     fail "could not enumerate test files"
   fi
-  if [[ -d "${module_dir}/tests" ]] && ! find "${module_dir}/tests" -mindepth 1 -maxdepth 1 -type f \( -name '*.tftest.hcl' -o -name '*.tofutest.hcl' -o -name '*.tftest.json' -o -name '*.tofutest.json' \) -print0 >> "${test_manifest}"; then
-    fail "could not enumerate test files"
+  while IFS= read -r -d '' test_file; do
+    test_dir=${test_file%/*}
+    if [[ "${test_dir}" != "${module_dir}" && "${test_dir}" != "${module_dir}/tests" ]]; then
+      fail "profile refusal: ${test_file} is a test file outside the module directory and tests/; tofu test never runs it; the check keeps a fixed shape"
+    fi
+  done < "${tmp_dir}/module-test-files"
+  if ! cat -- "${tmp_dir}/module-test-files" >> "${test_manifest}"; then
+    fail "could not prepare test manifest"
   fi
 done
 while IFS= read -r -d '' test_file; do
@@ -362,8 +370,8 @@ while IFS= read -r -d '' test_file; do
   fi
   scan_err="${tmp_dir}/run.err"
   if missing_run=$(run_scan run "${scan_err}" '
-    /^run / && in_run { outcome = "run-open:" run_name; exit }
-    /^run / && !/^run "[^"]+" \{$/ { outcome = "run-noncanonical:" $0; exit }
+    /^[[:space:]]*run[[:space:]]+"/ && in_run { outcome = "run-open:" run_name; exit }
+    /^[[:space:]]*run[[:space:]]+"/ && !/^run "[^"]+" \{$/ { outcome = "run-noncanonical:" $0; exit }
     /^run "[^"]+" \{$/ {
       in_run = 1
       run_name = $0

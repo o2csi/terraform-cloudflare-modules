@@ -287,6 +287,21 @@ module "extra" { # comment\
   printf 'ok commented-module-header\n'
 }
 
+case_indented_module_header() {
+  local status
+  new_case indented-module-header
+  sed -i '/^```$/i\
+  module "extra" {\
+    source = "./x"\
+  }' "${case_dir}/modules/cf-kv/README.md"
+  git -C "${case_dir}" add -A
+  status=$(run_check indented-module-header shim)
+  assert_status indented-module-header "${status}" 1
+  assert_log_has indented-module-header 'non-canonical module header'
+  assert_no_shim indented-module-header
+  printf 'ok indented-module-header\n'
+}
+
 case_commented_run_header() {
   local status
   new_case commented-run-header
@@ -297,6 +312,18 @@ case_commented_run_header() {
   assert_log_has commented-run-header 'non-canonical run header'
   assert_no_shim commented-run-header
   printf 'ok commented-run-header\n'
+}
+
+case_indented_run_header() {
+  local status
+  new_case indented-run-header
+  printf '%s\n' '' '  run "applies" {' '  }' >> "${case_dir}/modules/cf-kv/tests/smoke.tftest.hcl"
+  git -C "${case_dir}" add -A
+  status=$(run_check indented-run-header shim)
+  assert_status indented-run-header "${status}" 1
+  assert_log_has indented-run-header 'non-canonical run header'
+  assert_no_shim indented-run-header
+  printf 'ok indented-run-header\n'
 }
 
 case_json_test_file() {
@@ -550,9 +577,21 @@ case_test_outside_discovery() {
   git -C "${case_dir}" add -A
   status=$(run_check test-outside-discovery shim)
   assert_status test-outside-discovery "${status}" 1
-  assert_log_lacks test-outside-discovery 'profile refusal'
-  assert_shim test-outside-discovery
+  assert_log_has test-outside-discovery 'outside the module directory and tests/'
+  assert_no_shim test-outside-discovery
   printf 'ok test-outside-discovery\n'
+}
+
+case_hidden_test_file() {
+  local status
+  new_case hidden-test-file
+  printf '%s\n' 'run "applies" {' '}' > "${case_dir}/modules/cf-kv/tests/.backup.tftest.hcl"
+  git -C "${case_dir}" add -A
+  status=$(run_check hidden-test-file shim)
+  assert_status hidden-test-file "${status}" 1
+  assert_log_lacks hidden-test-file 'profile refusal'
+  assert_shim hidden-test-file
+  printf 'ok hidden-test-file\n'
 }
 
 case_stem_collision() {
@@ -581,7 +620,9 @@ case_run_without_plan
 case_env_allowlist
 case_tf_data_dir
 case_commented_module_header
+case_indented_module_header
 case_commented_run_header
+case_indented_run_header
 case_json_test_file
 case_tf_cli_args
 case_untracked_gitattributes
@@ -601,5 +642,6 @@ case_unterminated_run
 case_run_header_while_open
 case_noncanonical_run_while_open
 case_test_outside_discovery
+case_hidden_test_file
 case_stem_collision
 printf 'check-modules tests: PASS\n'
