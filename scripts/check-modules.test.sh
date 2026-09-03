@@ -7,16 +7,17 @@ script_path=$(readlink -f "${BASH_SOURCE[0]}") || { printf 'FAIL: setup: cannot 
 repo_root=$(dirname "$(dirname "${script_path}")")
 cd "${repo_root}" || { printf 'FAIL: setup: cannot change to the repository root\n' >&2; exit 1; }
 
-test_root=$(mktemp -d) || { printf 'FAIL: setup: cannot create temporary directory\n' >&2; exit 1; }
+test_root=''
 cleanup() {
   local status=$?
-  if ! rm -rf -- "${test_root}"; then
+  if [[ -n "${test_root}" ]] && ! rm -rf -- "${test_root}"; then
     printf 'check-modules.test.sh: could not remove temporary directory: %s\n' "${test_root}" >&2
     [[ "${status}" -eq 0 ]] && exit 1
   fi
   exit "${status}"
 }
 trap cleanup EXIT
+test_root=$(mktemp -d) || { printf 'FAIL: setup: cannot create temporary directory\n' >&2; exit 1; }
 
 base_fixture="${test_root}/base"
 logs_dir="${test_root}/logs"
@@ -47,8 +48,16 @@ git -C "${base_fixture}" config user.email check-modules-test@example.invalid
 git -C "${base_fixture}" add -A
 git -C "${base_fixture}" commit -q -m fixture
 
-printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" "$*" >> "${CHECK_MODULES_TEST_ROOT:?}/logs/${CHECK_MODULES_TEST_CASE:?}.shim.log"' 'exit 97' > "${shim_dir}/tofu"
+envshim_dir="${test_root}/envshim"
+mkdir -p "${envshim_dir}"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" "$*" >> "${TF_PLUGIN_CACHE_DIR:?}/shim.log"' 'exit 97' > "${shim_dir}/tofu"
 chmod +x "${shim_dir}/tofu"
+printf '%s\n' '#!/usr/bin/env bash' "env | grep -Ev '^(PWD|SHLVL|_)=' > \"\${TF_PLUGIN_CACHE_DIR:?}/shim.log\"" 'if [[ -f modules/cf-kv/main.tf ]]; then grep -c $'\''\r'\'' modules/cf-kv/main.tf || true; else printf "0\\n"; fi | sed "s/^/cr-count=/" > "${TF_PLUGIN_CACHE_DIR:?}/cr-count"' 'exit 97' > "${envshim_dir}/tofu"
+chmod +x "${envshim_dir}/tofu"
+
+shim_log() {
+  printf '%s/cache/%s/shim.log' "${test_root}" "$1"
+}
 
 fail_case() {
   printf 'FAIL: %s: %s\n' "$1" "$2" >&2
@@ -56,9 +65,9 @@ fail_case() {
     printf -- '--- %s.log ---\n' "$1" >&2
     cat -- "${logs_dir}/$1.log" >&2
   fi
-  if [[ -s "${logs_dir}/$1.shim.log" ]]; then
+  if [[ -s "$(shim_log "$1")" ]]; then
     printf -- '--- %s.shim.log ---\n' "$1" >&2
-    cat -- "${logs_dir}/$1.shim.log" >&2
+    cat -- "$(shim_log "$1")" >&2
   fi
   exit 1
 }
@@ -70,11 +79,18 @@ new_case() {
 }
 
 run_check() {
-  local case_name=$1 mode=$2 status
+  local case_name=$1 mode=$2 status cache_dir
+  cache_dir="${test_root}/cache/${case_name}"
+  mkdir -p "${cache_dir}"
   if [[ "${mode}" == shim ]]; then
-    if CHECK_MODULES_TEST_ROOT="${test_root}" CHECK_MODULES_TEST_CASE="${case_name}" PATH="${shim_dir}:${real_path}" "${case_dir}/scripts/check-modules.sh" > "${logs_dir}/${case_name}.log" 2>&1; then status=0; else status=$?; fi
+    if PATH="${shim_dir}:${real_path}" TF_PLUGIN_CACHE_DIR="${cache_dir}" "${case_dir}/scripts/check-modules.sh" > "${logs_dir}/${case_name}.log" 2>&1; then status=0; else status=$?; fi
+  elif [[ "${mode}" == envshim ]]; then
+    if PATH="${envshim_dir}:${real_path}" TF_PLUGIN_CACHE_DIR="${cache_dir}" "${case_dir}/scripts/check-modules.sh" > "${logs_dir}/${case_name}.log" 2>&1; then status=0; else status=$?; fi
+  elif [[ "${mode}" == relative ]]; then
+    if PATH=".:${shim_dir}:${real_path}" TF_PLUGIN_CACHE_DIR="${cache_dir}" "${case_dir}/scripts/check-modules.sh" > "${logs_dir}/${case_name}.log" 2>&1; then status=0; else status=$?; fi
   else
-    if CHECK_MODULES_TEST_ROOT="${test_root}" CHECK_MODULES_TEST_CASE="${case_name}" PATH="${real_path}" TF_PLUGIN_CACHE_DIR="${test_root}/plugin-cache" "${case_dir}/scripts/check-modules.sh" > "${logs_dir}/${case_name}.log" 2>&1; then status=0; else status=$?; fi
+    mkdir -p "${test_root}/plugin-cache"
+    if PATH="${real_path}" TF_PLUGIN_CACHE_DIR="${test_root}/plugin-cache" "${case_dir}/scripts/check-modules.sh" > "${logs_dir}/${case_name}.log" 2>&1; then status=0; else status=$?; fi
   fi
   printf '%s' "${status}"
 }
@@ -96,7 +112,11 @@ assert_log_matches() {
 }
 
 assert_no_shim() {
-  [[ ! -e "${logs_dir}/$1.shim.log" ]] || fail_case "$1" "tofu shim was reached"
+  [[ ! -e "$(shim_log "$1")" ]] || fail_case "$1" "tofu shim was reached"
+}
+
+assert_shim() {
+  [[ -e "$(shim_log "$1")" ]] || fail_case "$1" "tofu shim was not reached"
 }
 
 case_baseline() {
@@ -105,6 +125,7 @@ case_baseline() {
   status=$(run_check baseline real)
   assert_status baseline "${status}" 0
   assert_log_lacks baseline 'check-modules.sh:'
+  printf 'ok baseline\n'
 }
 
 case_slash_comment() {
@@ -115,6 +136,7 @@ case_slash_comment() {
   status=$(run_check slash-comment real)
   assert_status slash-comment "${status}" 0
   assert_log_lacks slash-comment 'check-modules.sh:'
+  printf 'ok slash-comment\n'
 }
 
 case_block_comment() {
@@ -126,6 +148,7 @@ case_block_comment() {
   assert_status block-comment "${status}" 1
   assert_log_has block-comment 'line-leading /*'
   assert_no_shim block-comment
+  printf 'ok block-comment\n'
 }
 
 case_second_fence() {
@@ -137,6 +160,7 @@ case_second_fence() {
   assert_status second-fence "${status}" 1
   assert_log_has second-fence 'exactly one complete hcl fence'
   assert_no_shim second-fence
+  printf 'ok second-fence\n'
 }
 
 case_indented_fence() {
@@ -148,6 +172,7 @@ case_indented_fence() {
   assert_status indented-fence "${status}" 1
   assert_log_has indented-fence 'indented fence'
   assert_no_shim indented-fence
+  printf 'ok indented-fence\n'
 }
 
 case_source_outside_module() {
@@ -163,6 +188,7 @@ locals {\
   assert_status source-outside-module "${status}" 1
   assert_log_has source-outside-module 'source must be inside the single module block'
   assert_no_shim source-outside-module
+  printf 'ok source-outside-module\n'
 }
 
 case_no_modules_in_index() {
@@ -173,6 +199,7 @@ case_no_modules_in_index() {
   assert_status no-modules-in-index "${status}" 1
   assert_log_has no-modules-in-index 'modules/ is absent from the index'
   assert_no_shim no-modules-in-index
+  printf 'ok no-modules-in-index\n'
 }
 
 case_untracked_then_staged() {
@@ -186,6 +213,7 @@ case_untracked_then_staged() {
   status=$(run_check untracked-then-staged real)
   assert_status untracked-then-staged "${status}" 1
   assert_log_has untracked-then-staged 'assertion 1:'
+  printf 'ok untracked-then-staged\n'
 }
 
 case_unstaged_edit() {
@@ -195,6 +223,7 @@ case_unstaged_edit() {
   status=$(run_check unstaged-edit real)
   assert_status unstaged-edit "${status}" 0
   assert_log_lacks unstaged-edit 'check-modules.sh:'
+  printf 'ok unstaged-edit\n'
 }
 
 case_run_without_plan() {
@@ -206,6 +235,7 @@ case_run_without_plan() {
   assert_status run-without-plan "${status}" 1
   assert_log_has run-without-plan 'has no command = plan'
   assert_no_shim run-without-plan
+  printf 'ok run-without-plan\n'
 }
 
 case_tf_data_dir() {
@@ -218,6 +248,7 @@ case_tf_data_dir() {
   assert_log_lacks tf-data-dir 'check-modules.sh:'
   [[ ! -e "${case_dir}/.tfdata" ]] || fail_case tf-data-dir 'TF_DATA_DIR was used'
   [[ -z "$(git -C "${case_dir}" status --porcelain --ignored)" ]] || fail_case tf-data-dir 'fixture work tree changed'
+  printf 'ok tf-data-dir\n'
 }
 
 case_commented_module_header() {
@@ -232,6 +263,7 @@ module "extra" { # comment\
   assert_status commented-module-header "${status}" 1
   assert_log_has commented-module-header 'non-canonical module header'
   assert_no_shim commented-module-header
+  printf 'ok commented-module-header\n'
 }
 
 case_commented_run_header() {
@@ -243,6 +275,7 @@ case_commented_run_header() {
   assert_status commented-run-header "${status}" 1
   assert_log_has commented-run-header 'non-canonical run header'
   assert_no_shim commented-run-header
+  printf 'ok commented-run-header\n'
 }
 
 case_json_test_file() {
@@ -254,6 +287,7 @@ case_json_test_file() {
   assert_status json-test-file "${status}" 1
   assert_log_has json-test-file 'is a JSON test file'
   assert_no_shim json-test-file
+  printf 'ok json-test-file\n'
 }
 
 case_tf_cli_args() {
@@ -264,6 +298,57 @@ case_tf_cli_args() {
   unset TF_CLI_ARGS_test
   assert_status tf-cli-args "${status}" 0
   assert_log_matches tf-cli-args 'run "plans"\.\.\. pass'
+  printf 'ok tf-cli-args\n'
+}
+
+case_env_allowlist() {
+  local status names home_value
+  new_case env-allowlist
+  export CLOUDFLARE_API_TOKEN=leak TF_CLI_CONFIG_FILE=/nonexistent TF_DATA_DIR="${case_dir}/.tfdata" HTTPS_PROXY=http://127.0.0.1:9
+  status=$(run_check env-allowlist envshim)
+  unset CLOUDFLARE_API_TOKEN TF_CLI_CONFIG_FILE TF_DATA_DIR HTTPS_PROXY
+  assert_status env-allowlist "${status}" 1
+  names=$(cut -d= -f1 "$(shim_log env-allowlist)" | sort -u | tr '\n' ' ')
+  [[ "${names}" == 'HOME PATH TF_PLUGIN_CACHE_DIR TMPDIR ' ]] || fail_case env-allowlist "unexpected tofu environment names: ${names}"
+  home_value=$(grep '^HOME=' "$(shim_log env-allowlist)")
+  [[ "${home_value}" != "HOME=${HOME}" && "${home_value}" == */home ]] || fail_case env-allowlist "unexpected tofu HOME: ${home_value}"
+  printf 'ok env-allowlist\n'
+}
+
+case_untracked_gitattributes() {
+  local status
+  new_case untracked-gitattributes
+  printf '%s\n' '*.tf eol=crlf' > "${case_dir}/.gitattributes"
+  status=$(run_check untracked-gitattributes envshim)
+  assert_status untracked-gitattributes "${status}" 1
+  assert_shim untracked-gitattributes
+  grep -qx 'cr-count=0' "${test_root}/cache/untracked-gitattributes/cr-count" || fail_case untracked-gitattributes "export carries carriage returns: $(grep '^cr-count=' "${test_root}/cache/untracked-gitattributes/cr-count")"
+  printf 'ok untracked-gitattributes\n'
+}
+
+case_git_index_file() {
+  local status
+  new_case git-index-file
+  export GIT_INDEX_FILE="${case_dir}/.git/no-such-index"
+  status=$(run_check git-index-file shim)
+  unset GIT_INDEX_FILE
+  assert_status git-index-file "${status}" 1
+  assert_log_lacks git-index-file 'modules/ is absent from the index'
+  assert_shim git-index-file
+  printf 'ok git-index-file\n'
+}
+
+case_relative_path() {
+  local status
+  new_case relative-path
+  printf '%s\n' '#!/usr/bin/env bash' "printf 'hijacked\\n' >> '${case_dir}/hijack.log'" 'exit 98' > "${case_dir}/tofu"
+  chmod +x "${case_dir}/tofu"
+  git -C "${case_dir}" add -A
+  status=$(run_check relative-path relative)
+  assert_status relative-path "${status}" 1
+  [[ ! -e "${case_dir}/hijack.log" ]] || fail_case relative-path 'staged tofu was reached'
+  assert_shim relative-path
+  printf 'ok relative-path\n'
 }
 
 case_baseline
@@ -276,9 +361,13 @@ case_no_modules_in_index
 case_untracked_then_staged
 case_unstaged_edit
 case_run_without_plan
+case_env_allowlist
 case_tf_data_dir
 case_commented_module_header
 case_commented_run_header
 case_json_test_file
 case_tf_cli_args
+case_untracked_gitattributes
+case_git_index_file
+case_relative_path
 printf 'check-modules tests: PASS\n'

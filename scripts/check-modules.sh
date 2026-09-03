@@ -1,20 +1,27 @@
 #!/usr/bin/env bash
 # This check accepts a fixed shape: top-level blocks begin at column 0; no heredoc; no block comment in
 # variables.tf or outputs.tf; no line-leading block comment in a README example; README fences begin at column 0;
-# each README has one hcl fence and one top-level module block; module and run headers are written exactly
-# module "<name>" { / run "<name>" {; top-level test run blocks have command = plan; and JSON test files are refused.
-# It judges an export of the Git index written to ${tmp_dir}/index: git add what you want checked, because untracked,
-# ignored, and unstaged content is not read, while indexed but uncommitted content is. Every lexical assertion runs
-# before any tofu call. TF_DATA_DIR, TF_CLI_ARGS, TF_CLI_ARGS_fmt, TF_CLI_ARGS_init, TF_CLI_ARGS_validate, and
-# TF_CLI_ARGS_test are unset, and TF_PLUGIN_CACHE_DIR defaults under the temporary directory, so the default writes
-# nothing under the checkout. Without a lock file, tofu init selects the newest registry release
-# satisfying ~> 5.0 (subject to registry availability and plugin-cache reuse) and runs it at the caller's privilege:
-# this is a freshness sentinel for schema drift, not a reproducible build. scripts/check-modules.test.sh exercises refusals.
+# each README has one hcl fence and one top-level module block; a line starting with module in an extracted example,
+# or run in a test file, must be exactly module "<name>" { / run "<name>" {; a run block must carry command = plan;
+# and JSON test files are refused. These scans are lexical: they recognize the canonical spelling and refuse others
+# they can see; they are not an HCL parser and do not prove what tofu will execute.
+# The check judges an export of the Git index written to ${tmp_dir}/index, with .gitattributes taken from the index
+# tree (git --attr-source), and with GIT_DIR, GIT_INDEX_FILE and the other repository-selection variables cleared.
+# git add what you want checked: untracked, ignored, and unstaged content is not read, while indexed but uncommitted
+# content is. Git configuration (core.autocrlf, filters, info/attributes) still applies as you configured it.
+# Every tofu invocation runs through run_tofu, with an environment of exactly PATH, HOME (an empty directory under
+# the temporary directory), TMPDIR and TF_PLUGIN_CACHE_DIR: none of your credentials, CLI configuration, mirrors,
+# proxies or TF_* variables is inherited, so an honest mistake (a run that applies, a filter in TF_CLI_ARGS_test)
+# cannot use them. This is not a sandbox: staged content — this script included — runs at your privilege and can read
+# your files and processes. Run the check only on a branch you would run a script from.
+# Without a lock file, tofu init selects the newest registry release satisfying ~> 5.0 — a freshness sentinel, not a
+# reproducible build — and runs it at your privilege; a mirror configured in your CLI configuration is not used.
+# tofu test executes what tofu discovers in the module root and tests/; scripts/check-modules.test.sh exercises the
+# refusals and the environment.
 set -euo pipefail
 
 script_path=$(readlink -f "${BASH_SOURCE[0]}") || { printf 'check-modules.sh: cannot resolve the script path\n' >&2; exit 1; }
 repo_root=$(dirname "$(dirname "${script_path}")")
-cd "${repo_root}" || { printf 'check-modules.sh: cannot change to the repository root\n' >&2; exit 1; }
 
 fail() {
   printf 'check-modules.sh: %s\n' "$*" >&2
@@ -33,27 +40,36 @@ grep_answer() {
   fail "grep failed for ${file} (status ${status})"
 }
 
-command -v git >/dev/null || fail "git is required"
-[[ "$(git rev-parse --is-inside-work-tree 2>/dev/null)" == "true" ]] || fail "not inside a Git work tree"
-command -v tofu >/dev/null || fail "tofu is required"
+run_tofu() {
+  "${env_bin}" -i PATH="${PATH}" HOME="${tmp_dir}/home" TMPDIR="${tmp_dir}" TF_PLUGIN_CACHE_DIR="${TF_PLUGIN_CACHE_DIR}" "${tofu_bin}" "$@"
+}
 
-tmp_dir=$(mktemp -d) || fail "could not create a temporary directory"
-tmp_dir=$(readlink -f -- "${tmp_dir}") || fail "could not canonicalize the temporary directory"
+command -v git >/dev/null || fail "git is required"
+tofu_bin=$(readlink -f -- "$(command -v tofu)") || fail "tofu is required"
+env_bin=$(readlink -f -- "$(command -v env)") || fail "env is required"
+cd "${repo_root}" || fail "cannot change to the repository root"
+unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_CEILING_DIRECTORIES GIT_ATTR_SOURCE
+[[ "$(git rev-parse --is-inside-work-tree 2>/dev/null)" == "true" ]] || fail "not inside a Git work tree"
+
+tmp_dir=''
 cleanup() {
   local status=$?
-  if ! rm -rf -- "${tmp_dir}"; then
+  if [[ -n "${tmp_dir}" ]] && ! rm -rf -- "${tmp_dir}"; then
     printf 'check-modules.sh: could not remove temporary directory: %s\n' "${tmp_dir}" >&2
     [[ "${status}" -eq 0 ]] && exit 1
   fi
   exit "${status}"
 }
 trap cleanup EXIT
+tmp_dir=$(mktemp -d) || fail "could not create a temporary directory"
+tmp_dir=$(readlink -f -- "${tmp_dir}") || fail "could not canonicalize the temporary directory"
 
 # The export lives in ${tmp_dir}/index; generated examples and the cache are siblings, then the check cd's into it.
 index_dir="${tmp_dir}/index"
 mkdir -p "${index_dir}" || fail "could not create the index export directory"
-if ! git checkout-index -a -f --prefix="${index_dir}/"; then
-  fail "could not export the index"
+index_tree=$(git write-tree) || fail "could not write the index tree (unmerged entries?)"
+if ! git --attr-source="${index_tree}" checkout-index -a -f --prefix="${index_dir}/"; then
+  fail "could not export the index (git 2.40 or newer is required)"
 fi
 cd "${index_dir}" || fail "could not change to the index export"
 
@@ -262,24 +278,24 @@ while IFS= read -r -d '' test_file; do
   fi
 done < "${tmp_dir}/test-files"
 
-unset TF_DATA_DIR TF_CLI_ARGS TF_CLI_ARGS_fmt TF_CLI_ARGS_init TF_CLI_ARGS_validate TF_CLI_ARGS_test
 export TF_PLUGIN_CACHE_DIR="${TF_PLUGIN_CACHE_DIR:-${tmp_dir}/plugin-cache}"
 mkdir -p "${TF_PLUGIN_CACHE_DIR}" || fail "could not create TF_PLUGIN_CACHE_DIR: ${TF_PLUGIN_CACHE_DIR}"
+mkdir -p "${tmp_dir}/home" || fail "could not create temporary HOME: ${tmp_dir}/home"
 
-if ! tofu fmt -no-color -check -recursive modules; then
+if ! run_tofu fmt -no-color -check -recursive modules; then
   fail "assertion 1: tofu fmt -check -recursive failed"
 fi
 
 for module_dir in "${module_dirs[@]}"; do
   module=${module_dir##*/}
   staged_module="modules/${module}"
-  if ! tofu -chdir="${staged_module}" init -no-color -backend=false -input=false; then
+  if ! run_tofu -chdir="${staged_module}" init -no-color -backend=false -input=false; then
     fail "assertion 5: ${module} init failed"
   fi
-  if ! tofu -chdir="${staged_module}" validate -no-color; then
+  if ! run_tofu -chdir="${staged_module}" validate -no-color; then
     fail "assertion 5: ${module} validate failed"
   fi
-  if ! tofu -chdir="${staged_module}" test -no-color; then
+  if ! run_tofu -chdir="${staged_module}" test -no-color; then
     fail "assertion 5: ${module} tests failed"
   fi
 done
@@ -302,10 +318,10 @@ for module_dir in "${module_dirs[@]}"; do
     { print }
   ' "${example_dir}/main.tf" > "${example_dir}/main.tf.rewritten"
   mv "${example_dir}/main.tf.rewritten" "${example_dir}/main.tf"
-  if ! tofu -chdir="${example_dir}" init -no-color -backend=false -input=false; then
+  if ! run_tofu -chdir="${example_dir}" init -no-color -backend=false -input=false; then
     fail "assertion 6: ${module} README example init failed"
   fi
-  if ! tofu -chdir="${example_dir}" validate -no-color; then
+  if ! run_tofu -chdir="${example_dir}" validate -no-color; then
     fail "assertion 6: ${module} README example validate failed"
   fi
 done
