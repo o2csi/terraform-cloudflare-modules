@@ -549,6 +549,7 @@ case_interpolated_ref() {
   status=$(run_check interpolated-ref shim)
   assert_status interpolated-ref "${status}" 1
   assert_log_has interpolated-ref 'not a literal Git reference'
+  assert_log_lacks interpolated-ref 'var.ref'
   assert_no_shim interpolated-ref
   printf 'ok interpolated-ref\n'
 }
@@ -662,6 +663,114 @@ case_stem_collision() {
   printf 'ok stem-collision\n'
 }
 
+assert_safe_log() {
+  local case_name=$1 control_bytes log_bytes status
+  local log="${logs_dir}/${case_name}.log"
+  if control_bytes=$(LC_ALL=C tr -d '\011\012\040-\377' < "${log}" | wc -c); then
+    :
+  else
+    status=$?
+    fail_case "${case_name}" "could not inspect ${log} for control bytes (tr or wc exit ${status})"
+  fi
+  [[ "${control_bytes}" -eq 0 ]] || fail_case "${case_name}" "${log} contains ${control_bytes} control bytes"
+  if log_bytes=$(wc -c < "${log}"); then
+    :
+  else
+    status=$?
+    fail_case "${case_name}" "could not inspect ${log} size (wc exit ${status})"
+  fi
+  [[ "${log_bytes}" -lt 4096 ]] || fail_case "${case_name}" "${log} is ${log_bytes} bytes, not smaller than 4096"
+}
+
+case_control_bytes_run_label() {
+  local status run_label
+  new_case control-bytes-run-label
+  printf -v run_label 'a\033[31mforged\rok'
+  printf '\nrun "%s" {\n}\n' "${run_label}" >> "${case_dir}/modules/cf-kv/tests/smoke.tftest.hcl"
+  git -C "${case_dir}" add -A
+  status=$(run_check control-bytes-run-label shim)
+  assert_status control-bytes-run-label "${status}" 1
+  assert_log_matches control-bytes-run-label 'line [0-9]+'
+  assert_safe_log control-bytes-run-label
+  assert_no_shim control-bytes-run-label
+  printf 'ok control-bytes-run-label\n'
+}
+
+case_control_bytes_module_label() {
+  local status readme_line replacement_readme
+  new_case control-bytes-module-label
+  replacement_readme="${case_dir}/modules/cf-kv/README.md.replacement"
+  while IFS= read -r readme_line || [[ -n "${readme_line}" ]]; do
+    if [[ "${readme_line}" == 'module "kv" {' ]]; then
+      printf 'module "a\033[31mforged\rok" {\n'
+    else
+      printf '%s\n' "${readme_line}"
+    fi
+  done < "${case_dir}/modules/cf-kv/README.md" > "${replacement_readme}"
+  mv -- "${replacement_readme}" "${case_dir}/modules/cf-kv/README.md"
+  git -C "${case_dir}" add -A
+  status=$(run_check control-bytes-module-label shim)
+  assert_status control-bytes-module-label "${status}" 1
+  assert_log_matches control-bytes-module-label 'line [0-9]+'
+  assert_safe_log control-bytes-module-label
+  assert_no_shim control-bytes-module-label
+  printf 'ok control-bytes-module-label\n'
+}
+
+case_control_bytes_test_filename() {
+  local status test_name
+  new_case control-bytes-test-filename
+  printf -v test_name '\033[2Jx.tftest.json'
+  printf '{}\n' > "${case_dir}/modules/cf-kv/tests/${test_name}"
+  git -C "${case_dir}" add -A
+  status=$(run_check control-bytes-test-filename shim)
+  assert_status control-bytes-test-filename "${status}" 1
+  assert_safe_log control-bytes-test-filename
+  printf 'ok control-bytes-test-filename\n'
+}
+
+case_unicode_run_label() {
+  local status
+  new_case unicode-run-label
+  printf '%s\n' '' 'run "é" {' '}' >> "${case_dir}/modules/cf-kv/tests/smoke.tftest.hcl"
+  git -C "${case_dir}" add -A
+  status=$(run_check unicode-run-label shim)
+  assert_status unicode-run-label "${status}" 1
+  assert_log_has unicode-run-label 'non-canonical run header'
+  assert_log_matches unicode-run-label 'line [0-9]+'
+  assert_no_shim unicode-run-label
+  printf 'ok unicode-run-label\n'
+}
+
+case_long_run_label() {
+  local status run_label
+  new_case long-run-label
+  printf -v run_label '%*s' 20000 ''
+  run_label=${run_label// /a}
+  printf '\nrun "%s" {\n}\n' "${run_label}" >> "${case_dir}/modules/cf-kv/tests/smoke.tftest.hcl"
+  git -C "${case_dir}" add -A
+  status=$(run_check long-run-label shim)
+  assert_status long-run-label "${status}" 1
+  assert_log_has long-run-label 'has no command = plan'
+  assert_safe_log long-run-label
+  assert_no_shim long-run-label
+  printf 'ok long-run-label\n'
+}
+
+case_undocumented_block_name() {
+  local status block_name
+  new_case undocumented-block-name
+  printf -v block_name '\033[31mx'
+  printf 'variable "%s" {\n}\n' "${block_name}" >> "${case_dir}/modules/cf-kv/variables.tf"
+  git -C "${case_dir}" add -A
+  status=$(run_check undocumented-block-name shim)
+  assert_status undocumented-block-name "${status}" 1
+  assert_log_has undocumented-block-name 'block lacks a description'
+  assert_safe_log undocumented-block-name
+  assert_no_shim undocumented-block-name
+  printf 'ok undocumented-block-name\n'
+}
+
 case_baseline
 case_slash_comment
 case_block_comment
@@ -703,4 +812,10 @@ case_noncanonical_run_while_open
 case_test_outside_discovery
 case_hidden_test_file
 case_stem_collision
+case_control_bytes_run_label
+case_control_bytes_module_label
+case_control_bytes_test_filename
+case_unicode_run_label
+case_long_run_label
+case_undocumented_block_name
 printf 'check-modules tests: PASS\n'

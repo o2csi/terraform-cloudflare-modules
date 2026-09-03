@@ -64,7 +64,7 @@ source = "git::https://github.com/o2csi/terraform-cloudflare-modules.git//module
 - **Placeholder content** — Worker content is deployed via `wrangler`, not Terraform. Modules use a placeholder and ignore content drift via `lifecycle.ignore_changes`
 - **Bindings** — passed as maps/lists of objects for flexibility (CF v5 unified bindings schema)
 - **Route creation** — `route_pattern = ""` disables route creation in cf-worker-full
-- **Checks** — `scripts/check-modules.sh` judges an export of the Git index (stage what you want checked with `git add`): the layout, the interface descriptions, every module's `tofu validate` and `tofu test`, and each module README's single column-zero ```` ```hcl ```` fenced example (indented or inline snippets are not validated), with tofu receiving only your `PATH` and plugin-cache path (an empty `HOME` and a private `TMPDIR` otherwise); it is not a sandbox, so run it only on a branch you would run a script from. Run it before pushing.
+- **Checks** — `scripts/check-modules.sh` judges an export of the Git index (stage what you want checked with `git add`, untracked and unstaged paths are not exported, Git configuration and info/attributes still apply): the layout, the interface descriptions, every module's `tofu validate` and `tofu test`, and each module README's single column-zero ```` ```hcl ```` fenced example (indented or inline snippets are not validated), with tofu receiving only your `PATH` and plugin-cache path (an empty `HOME` and a private `TMPDIR` otherwise); it is not a sandbox, so run it only on a branch you would run a script from. Run it before pushing.
 
 ## Versioning
 
