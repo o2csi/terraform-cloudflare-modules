@@ -64,7 +64,7 @@ source = "git::https://github.com/o2csi/terraform-cloudflare-modules.git//module
 - **Placeholder content** — Worker content is deployed via `wrangler`, not Terraform. Modules use a placeholder and ignore content drift via `lifecycle.ignore_changes`
 - **Bindings** — passed as maps/lists of objects for flexibility (CF v5 unified bindings schema)
 - **Route creation** — `route_pattern = ""` disables route creation in cf-worker-full
-- **Checks** — `scripts/check-modules.sh` validates the layout, the descriptions, every module and every README example in a temporary copy; run it before pushing.
+- **Checks** — `scripts/check-modules.sh` judges an export of the Git index (stage what you want checked with `git add`) and runs every module's tests; run it before pushing.
 
 ## Versioning
 
