@@ -14,7 +14,8 @@
 # non-canonical; a run block carries command = plan; JSON test files are refused;
 # a test file is one tofu test discovers (the module directory and tests/); a test-suffixed file elsewhere under a
 # module is refused; dot-prefixed files are ignored; and a same-directory .tftest/.tofutest stem collision is refused;
-# the example's ?ref= is a literal ref token that git check-ref-format accepts. These scans
+# the example's ?ref= is a literal token in this repository's profile (ASCII letters, digits, `._/-`) that git
+# check-ref-format --allow-onelevel also accepts. These scans
 # are lexical: they recognize the canonical spellings and refuse what they can see; they are not an HCL parser. They
 # require GNU awk, GNU coreutils, GNU findutils, GNU grep and GNU sed.
 # The check judges an export of the Git index written to ${tmp_dir}/index, with .gitattributes taken from the index
@@ -34,7 +35,7 @@
 # reproducible build — and runs it at your privilege; a mirror configured in your CLI configuration is not used.
 # Interface declarations: variable and output headers are accepted only in variables.tf and outputs.tf, at column 0 as variable "<name>" { / output "<name>" { with an ASCII identifier (this repository's profile; HCL itself allows Unicode letters); a .tofu, .tf.json or .tofu.json file in a module root is refused, because tofu would load it (and .tofu shadows .tf) outside the description scan; /* outside a double-quoted string is refused in every module-root .tf, while variables.tf and outputs.tf refuse it even inside strings.
 # tofu test executes what tofu discovers in the module root and tests/; scripts/check-modules.test.sh exercises the
-# refusals and the environment. Every message fail emits is one record, byte-safe and under 4096 bytes. A shell or
+# refusals and the environment. Every message fail emits is one record under 4096 bytes with NUL, the C0 controls and DEL removed; bytes at or above 0x80 pass through unchanged, so a name is shown as its UTF-8 bytes. A shell or
 # utility error in a failing environment (an unwritable temporary directory or a file removed mid-run) is printed by
 # that tool in its own words and is outside this property.
 render_failure() {
@@ -385,13 +386,13 @@ for module_dir in "${module_dirs[@]}"; do
   source_ref=${source_name_and_ref#*\?ref=}
   [[ "${source_module}" == "${module}" && -n "${source_ref}" ]] || fail "assertion 6: ${module} README has no module source ending in //modules/${module}?ref=<something>\""
   if [[ ! "${source_ref}" =~ ^[ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._/][ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._/-]*$ ]]; then
-    fail "assertion 6: ${module} README example ref is not a literal Git reference that git check-ref-format --allow-onelevel accepts"
+    fail "assertion 6: ${module} README example ref is not a literal Git reference token in this repository's profile (ASCII letters, digits, ._/-) that git check-ref-format --allow-onelevel also accepts"
   fi
   if git check-ref-format --allow-onelevel "${source_ref}" >/dev/null 2>&1; then
     :
   else
     ref_status=$?
-    [[ "${ref_status}" -eq 1 ]] && fail "assertion 6: ${module} README example ref is not a literal Git reference that git check-ref-format --allow-onelevel accepts"
+    [[ "${ref_status}" -eq 1 ]] && fail "assertion 6: ${module} README example ref is not a literal Git reference token in this repository's profile (ASCII letters, digits, ._/-) that git check-ref-format --allow-onelevel also accepts"
     fail "could not validate the example ref of ${module} (git check-ref-format exit ${ref_status})"
   fi
 done
