@@ -35,7 +35,7 @@
 # reproducible build — and runs it at your privilege; a mirror configured in your CLI configuration is not used.
 # Interface declarations: variable and output headers are accepted only in variables.tf and outputs.tf, at column 0 as variable "<name>" { / output "<name>" { with an ASCII identifier (this repository's profile; HCL itself allows Unicode letters); a .tofu, .tf.json or .tofu.json file in a module root is refused, because tofu would load it (and .tofu shadows .tf) outside the description scan; /* outside a double-quoted string is refused in every module-root .tf, while variables.tf and outputs.tf refuse it even inside strings.
 # tofu test executes what tofu discovers in the module root and tests/; scripts/check-modules.test.sh exercises the
-# refusals and the environment. Every message fail emits is one record, byte-safe and under 4096 bytes. A shell or
+# refusals and the environment. Every message fail emits is one record under 4096 bytes with NUL, the C0 controls and DEL removed; bytes at or above 0x80 pass through unchanged, so a name is shown as its UTF-8 bytes. A shell or
 # utility error in a failing environment (an unwritable temporary directory or a file removed mid-run) is printed by
 # that tool in its own words and is outside this property.
 render_failure() {
