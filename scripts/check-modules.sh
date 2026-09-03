@@ -26,14 +26,16 @@
 # under the temporary directory), TMPDIR (the temporary directory) and TF_PLUGIN_CACHE_DIR (yours, or a default under
 # the temporary directory); credential-bearing variables, CLI configuration, mirrors and proxies carried by your
 # environment are not inherited, and no TF_* variable other than TF_PLUGIN_CACHE_DIR reaches tofu. An honest mistake
-# (a run that applies, a filter in TF_CLI_ARGS_test) cannot use them. This is not a sandbox: staged content — this
-# script included — runs at your privilege and can read your files, including credential files, and processes. Run the
-# check only on a branch you would run a script from.
+# (a run that applies, a filter in TF_CLI_ARGS_test) cannot use them. This is not a sandbox: the checker itself runs
+# from your worktree, and the exported configuration, tests, Git filters and provider binaries run at your privilege
+# and can read your files, including credential files, and processes. Run the check only on a branch you would run a
+# script from.
 # Without a lock file, tofu init selects the newest registry release satisfying ~> 5.0 — a freshness sentinel, not a
 # reproducible build — and runs it at your privilege; a mirror configured in your CLI configuration is not used.
 # tofu test executes what tofu discovers in the module root and tests/; scripts/check-modules.test.sh exercises the
-# refusals and the environment. Each fail diagnostic is one record under 4096 bytes; only the record-terminating
-# newline is below 0x20.
+# refusals and the environment. Every message fail emits is one record, byte-safe and under 4096 bytes. A shell or
+# utility error in a failing environment (an unwritable temporary directory or a file removed mid-run) is printed by
+# that tool in its own words and is outside this property.
 render_failure() {
   local message
   message=$(LC_ALL=C printf '%s' "$*" | LC_ALL=C tr -d '\000-\037\177' | head -c 4076 || :)
@@ -129,7 +131,7 @@ cleanup() {
   local status=$?
   if [[ -n "${tmp_dir}" ]] && ! rm -rf -- "${tmp_dir}"; then
     trap - EXIT
-    render_failure "could not remove temporary directory: ${tmp_dir}"
+    render_failure "could not remove temporary directory: ${tmp_dir}" || :
     [[ "${status}" -ne 0 ]] && exit "${status}"
     exit 1
   fi
@@ -244,7 +246,7 @@ for module_dir in "${module_dirs[@]}"; do
   scan_err="${example_dir}/fence.err"
   if run_scan fence "${scan_err}" '
     /^ (```|~~~)/ || /^  (```|~~~)/ || /^   (```|~~~)/ {
-      outcome = "indented-fence"
+      outcome = "indented-fence:" FNR
       exit
     }
     !in_block && /^(```|~~~)/ {
@@ -253,7 +255,7 @@ for module_dir in "${module_dirs[@]}"; do
         seen = 1
         next
       }
-      outcome = "fence-structure"
+      outcome = "fence-structure:" FNR
       exit
     }
     in_block && /^```$/ {
@@ -263,7 +265,7 @@ for module_dir in "${module_dirs[@]}"; do
     }
     in_block { print }
     END {
-      if (outcome == "" && (!seen || in_block || !closed)) outcome = "fence-structure"
+      if (outcome == "" && (!seen || in_block || !closed)) outcome = "fence-structure:" FNR
       if (outcome != "") {
         print "PROFILE:" outcome > "/dev/stderr"
         exit 1
@@ -273,16 +275,16 @@ for module_dir in "${module_dirs[@]}"; do
     :
   else
     fence_status=$?
-    if ! profile_marker "${scan_err}" >/dev/null; then
+    if ! profile_marker "${scan_err}"; then
       fail "could not scan ${readme}: ${profile_records} profile records"
     fi
     if [[ -z "${profile_record}" ]]; then
       fail "could not scan ${readme} (fence awk exit ${fence_status})"
     fi
-    if [[ "${profile_record}" == 'PROFILE:indented-fence' ]]; then
-      fail "profile refusal: ${readme} has an indented fence; the check keeps a fixed shape"
+    if [[ "${profile_record}" == PROFILE:indented-fence:* ]]; then
+      fail "profile refusal: ${readme} line ${profile_record#PROFILE:indented-fence:} has an indented fence; the check keeps a fixed shape"
     fi
-    fail "assertion 6: ${module} README must contain exactly one complete hcl fence and no other fence"
+    fail "assertion 6: ${module} README line ${profile_record#PROFILE:fence-structure:} must contain exactly one complete hcl fence and no other fence"
   fi
   if token_outside_strings "${example_dir}/main.tf" '<<'; then
     fail "profile refusal: ${readme} extracted example contains <<; the check keeps a fixed shape"
@@ -323,7 +325,7 @@ for module_dir in "${module_dirs[@]}"; do
     :
   else
     module_status=$?
-    if ! profile_marker "${scan_err}" >/dev/null; then
+    if ! profile_marker "${scan_err}"; then
       fail "could not scan ${example_dir}/main.tf: ${profile_records} profile records"
     fi
     if [[ -z "${profile_record}" ]]; then
@@ -429,7 +431,7 @@ while IFS= read -r -d '' test_file; do
     :
   else
     run_status=$?
-    if ! profile_marker "${scan_err}" >/dev/null; then
+    if ! profile_marker "${scan_err}"; then
       fail "could not scan ${test_file}: ${profile_records} profile records"
     fi
     if [[ -z "${profile_record}" ]]; then

@@ -203,6 +203,7 @@ case_indented_fence() {
   git -C "${case_dir}" add -A
   status=$(run_check indented-fence shim)
   assert_status indented-fence "${status}" 1
+  assert_log_matches indented-fence 'line [0-9]+'
   assert_log_has indented-fence 'indented fence'
   assert_no_shim indented-fence
   printf 'ok indented-fence\n'
@@ -664,8 +665,9 @@ case_stem_collision() {
 }
 
 assert_safe_log() {
-  local case_name=$1 control_bytes log_bytes status
+  local case_name=$1 control_bytes diagnostic_lines log_bytes log_newlines status
   local log="${logs_dir}/${case_name}.log"
+  [[ -s "${log}" ]] || fail_case "${case_name}" "${log} is empty"
   if control_bytes=$(LC_ALL=C tr -d '\012\040-\377' < "${log}" | wc -c); then
     :
   else
@@ -673,6 +675,21 @@ assert_safe_log() {
     fail_case "${case_name}" "could not inspect ${log} for control bytes (tr or wc exit ${status})"
   fi
   [[ "${control_bytes}" -eq 0 ]] || fail_case "${case_name}" "${log} contains ${control_bytes} control bytes"
+  if log_newlines=$(LC_ALL=C tr -cd '\012' < "${log}" | wc -c); then
+    :
+  else
+    status=$?
+    fail_case "${case_name}" "could not inspect ${log} for newlines (tr or wc exit ${status})"
+  fi
+  [[ "${log_newlines}" -eq 1 ]] || fail_case "${case_name}" "${log} contains ${log_newlines} newlines, not one"
+  if diagnostic_lines=$(grep -c '^check-modules.sh: ' "${log}"); then
+    :
+  else
+    status=$?
+    [[ "${status}" -eq 1 ]] || fail_case "${case_name}" "could not count diagnostic records in ${log} (grep exit ${status})"
+    diagnostic_lines=0
+  fi
+  [[ "${diagnostic_lines}" -eq 1 ]] || fail_case "${case_name}" "${log} has ${diagnostic_lines} diagnostic records, not one"
   if log_bytes=$(wc -c < "${log}"); then
     :
   else
