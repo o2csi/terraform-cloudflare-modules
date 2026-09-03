@@ -190,7 +190,7 @@ while IFS= read -r -d '' module_dir; do
     break
   fi
   module=${module_dir##*/}
-  [[ "${module}" =~ ^[a-z0-9-]+$ ]] || fail "module directory name is invalid: ${module}"
+  [[ "${module}" =~ ^[abcdefghijklmnopqrstuvwxyz0123456789-]+$ ]] || fail "module directory name is invalid: ${module}"
   module_dirs+=("${module_dir}")
 done < "${tmp_dir}/module-entries"
 [[ -n "${module_entries_end}" ]] || could_not_read_list_to_end module-entries
@@ -304,7 +304,7 @@ for module_dir in "${module_dirs[@]}"; do
       :
     else
       description_status=$?
-      if [[ "${description_line}" =~ ^[0-9]+$ ]]; then
+      if [[ "${description_line}" =~ ^[0123456789]+$ ]]; then
         fail "assertion 4: ${interface_file} line ${description_line}: block lacks a description"
       fi
       fail "could not scan ${interface_file} (description awk exit ${description_status})"
@@ -371,7 +371,7 @@ for module_dir in "${module_dirs[@]}"; do
   fi
 done
 
-source_pattern='^[[:space:]]*source[[:space:]]*=[[:space:]]*"git::https://github.com/o2csi/terraform-cloudflare-modules\.git//modules/[a-z0-9-]+\?ref=[^"]+"[[:space:]]*$'
+source_pattern='^[[:space:]]*source[[:space:]]*=[[:space:]]*"git::https://github.com/o2csi/terraform-cloudflare-modules\.git//modules/[abcdefghijklmnopqrstuvwxyz0123456789-]+\?ref=[^"]+"[[:space:]]*$'
 for module_dir in "${module_dirs[@]}"; do
   module=${module_dir##*/}
   readme="${module_dir}/README.md"

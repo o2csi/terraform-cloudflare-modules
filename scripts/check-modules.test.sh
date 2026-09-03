@@ -570,26 +570,36 @@ case_block_comment_before_declaration() {
   printf 'ok block-comment-before-declaration\n'
 }
 
-case_unicode_variable_name_locale() {
-  local status locales locale_name collating_locale=''
-  new_case unicode-variable-name-locale
-  printf '%s\n' 'variable "é" {' '  description = "documented variable"' '}' > "${case_dir}/modules/cf-kv/variables.tf"
-  git -C "${case_dir}" add -A
+find_collating_locale() {
+  local case_name=$1 result_name=$2 locales locale_name status result=''
+  printf -v "${result_name}" '%s' ''
   if locales=$(locale -a); then
     :
   else
     status=$?
-    fail_case unicode-variable-name-locale "locale -a failed (status ${status})"
+    fail_case "${case_name}" "locale -a failed (status ${status})"
   fi
   while IFS= read -r locale_name; do
     [[ -n "${locale_name}" ]] || continue
     if LC_ALL="${locale_name}" bash -c '[[ "é" =~ ^[A-Za-z]+$ ]]'; then
-      collating_locale=${locale_name}
+      result=${locale_name}
       break
     fi
   done <<< "${locales}"
+  if [[ -z "${result}" ]]; then
+    printf 'skip %s: no installed locale collates é into [A-Za-z]\n' "${case_name}"
+    return 0
+  fi
+  printf -v "${result_name}" '%s' "${result}"
+}
+
+case_unicode_variable_name_locale() {
+  local status collating_locale
+  new_case unicode-variable-name-locale
+  printf '%s\n' 'variable "é" {' '  description = "documented variable"' '}' > "${case_dir}/modules/cf-kv/variables.tf"
+  git -C "${case_dir}" add -A
+  find_collating_locale unicode-variable-name-locale collating_locale
   if [[ -z "${collating_locale}" ]]; then
-    printf 'skip unicode-variable-name-locale: no installed locale collates é into [A-Za-z]\n'
     return 0
   fi
   status=$( (
@@ -600,6 +610,28 @@ case_unicode_variable_name_locale() {
   assert_log_has unicode-variable-name-locale 'profile refusal: modules/cf-kv/variables.tf line 1: an interface header is exactly variable "<name>" { or output "<name>" { with an ASCII identifier'
   assert_no_shim unicode-variable-name-locale
   printf 'ok unicode-variable-name-locale\n'
+}
+
+case_unicode_module_name_locale() {
+  local status collating_locale fixture_file
+  new_case unicode-module-name-locale
+  mkdir -p "${case_dir}/modules/é"
+  for fixture_file in README.md main.tf variables.tf outputs.tf versions.tf; do
+    cp -- "${case_dir}/modules/cf-kv/${fixture_file}" "${case_dir}/modules/é/${fixture_file}"
+  done
+  git -C "${case_dir}" add -A
+  find_collating_locale unicode-module-name-locale collating_locale
+  if [[ -z "${collating_locale}" ]]; then
+    return 0
+  fi
+  status=$( (
+    export "LC_ALL=${collating_locale}"
+    run_check unicode-module-name-locale shim
+  ) )
+  assert_status unicode-module-name-locale "${status}" 1
+  assert_log_has unicode-module-name-locale 'module directory name is invalid'
+  assert_no_shim unicode-module-name-locale
+  printf 'ok unicode-module-name-locale\n'
 }
 
 case_relative_path() {
@@ -1038,6 +1070,7 @@ case_unicode_variable_name
 case_harness_clears_git_selectors
 case_block_comment_before_declaration
 case_unicode_variable_name_locale
+case_unicode_module_name_locale
 case_relative_path
 case_block_commented_module
 case_heredoc_in_example
