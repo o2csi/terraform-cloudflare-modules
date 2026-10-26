@@ -20,10 +20,6 @@ module "access_app" {
 }
 ```
 
-To allow an email domain through one required identity provider:
-
-```hcl
-allowed_email_domains    = ["example.com"]
-allowed_idps             = ["01234567-89ab-cdef-0123-456789abcdef"]
-required_login_method_id = "01234567-89ab-cdef-0123-456789abcdef"
-```
+For a domain policy, set `allowed_email_domains = ["example.com"]`. Set
+`allowed_idps` to the identity provider offered at login and
+`required_login_method_id` to the provider that must authenticate the user.
