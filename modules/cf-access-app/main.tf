@@ -37,10 +37,15 @@ resource "cloudflare_zero_trust_access_application" "this" {
   allowed_idps              = var.allowed_idps
   auto_redirect_to_identity = var.auto_redirect_to_identity
 
-  policies = local.policy_enabled ? [
+  policies = concat(local.policy_enabled ? [
     {
       id         = cloudflare_zero_trust_access_policy.this[0].id
       precedence = var.policy_precedence
     },
-  ] : []
+    ] : [], [
+    for index, id in var.extra_policy_ids : {
+      id         = id
+      precedence = var.policy_precedence + index + 1
+    }
+  ])
 }

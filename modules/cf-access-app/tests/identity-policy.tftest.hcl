@@ -229,3 +229,55 @@ run "rejects_blank_required_identity_provider" {
   variables { required_login_method_id = "   " }
   expect_failures = [var.required_login_method_id]
 }
+
+run "extra_policy_preserves_workspace_human_policy" {
+  command = plan
+
+  variables {
+    allowed_email_domains    = ["o2csi.com"]
+    required_login_method_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    extra_policy_ids         = ["bbbbbbbb-cccc-dddd-eeee-ffffffffffff"]
+    policy_precedence        = 7
+  }
+
+  assert {
+    condition = (
+      length(cloudflare_zero_trust_access_application.this.policies) == 2 &&
+      cloudflare_zero_trust_access_application.this.policies[0].precedence == 7 &&
+      cloudflare_zero_trust_access_application.this.policies[1].precedence == 8 &&
+      cloudflare_zero_trust_access_application.this.policies[1].id == one(var.extra_policy_ids) &&
+      one(cloudflare_zero_trust_access_policy.this[0].include).email_domain.domain == "o2csi.com" &&
+      one(cloudflare_zero_trust_access_policy.this[0].require).login_method.id == var.required_login_method_id
+    )
+    error_message = "Attaching a reusable policy must preserve the human domain-plus-IdP policy and give each attachment a distinct precedence."
+  }
+}
+
+run "extra_policies_attach_without_generated_human_policy" {
+  command = plan
+
+  variables {
+    extra_policy_ids = ["bbbbbbbb-cccc-dddd-eeee-ffffffffffff", "cccccccc-dddd-eeee-ffff-aaaaaaaaaaaa"]
+  }
+
+  assert {
+    condition = (
+      length(cloudflare_zero_trust_access_policy.this) == 0 &&
+      [for policy in cloudflare_zero_trust_access_application.this.policies : policy.id] == var.extra_policy_ids &&
+      [for policy in cloudflare_zero_trust_access_application.this.policies : policy.precedence] == [2, 3]
+    )
+    error_message = "Explicit reusable policies must attach even when no human allow policy is generated."
+  }
+}
+
+run "rejects_blank_extra_policy_id" {
+  command = plan
+  variables { extra_policy_ids = [" "] }
+  expect_failures = [var.extra_policy_ids]
+}
+
+run "rejects_duplicate_extra_policy_ids" {
+  command = plan
+  variables { extra_policy_ids = ["bbbbbbbb-cccc-dddd-eeee-ffffffffffff", "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"] }
+  expect_failures = [var.extra_policy_ids]
+}

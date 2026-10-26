@@ -23,3 +23,11 @@ module "access_app" {
 For a domain policy, set `allowed_email_domains = ["example.com"]`. Set
 `allowed_idps` to the identity provider offered at login and
 `required_login_method_id` to the provider that must authenticate the user.
+
+Set `extra_policy_ids` to existing reusable Access policy IDs when the application
+also needs another authorization method, such as a CI service token policy with
+`decision = "non_identity"`. The default `[]` adds nothing. The module preserves
+the generated email/domain policy and its required login method. Additional
+policies receive consecutive precedences starting at `policy_precedence + 1`,
+including when no human policy is generated. IDs must be distinct, non-empty and
+have no surrounding whitespace. The caller owns each reusable policy's rules.

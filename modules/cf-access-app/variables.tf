@@ -78,3 +78,17 @@ variable "policy_precedence" {
   type        = number
   default     = 1
 }
+
+variable "extra_policy_ids" {
+  description = "Existing reusable Access policy IDs to attach after the generated human allow policy, starting at policy_precedence + 1. Empty leaves existing callers unchanged."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition = (
+      alltrue([for id in var.extra_policy_ids : trimspace(id) != "" && id == trimspace(id)]) &&
+      length(distinct(var.extra_policy_ids)) == length(var.extra_policy_ids)
+    )
+    error_message = "extra_policy_ids must contain distinct non-empty IDs without surrounding whitespace."
+  }
+}
