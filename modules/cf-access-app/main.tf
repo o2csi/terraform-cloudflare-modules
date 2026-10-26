@@ -1,8 +1,8 @@
 locals {
-  policy_enabled = length(var.allowed_emails) > 0
+  policy_enabled = length(var.allowed_emails) > 0 || length(var.allowed_email_domains) > 0
 }
 
-# Allow policy (only created when allowed_emails is non-empty).
+# Allow policy (only created when emails or email domains are supplied).
 # Created BEFORE the app so it can be referenced in app.policies.
 resource "cloudflare_zero_trust_access_policy" "this" {
   count = local.policy_enabled ? 1 : 0
@@ -11,10 +11,17 @@ resource "cloudflare_zero_trust_access_policy" "this" {
   name       = "${var.app_name}-allow"
   decision   = "allow"
 
-  include = [
-    for email in var.allowed_emails : {
+  include = concat(
+    [for email in var.allowed_emails : {
       email = { email = email }
-    }
+    }],
+    [for domain in var.allowed_email_domains : {
+      email_domain = { domain = domain }
+    }],
+  )
+
+  require = var.required_login_method_id == null ? [] : [
+    { login_method = { id = var.required_login_method_id } },
   ]
 }
 

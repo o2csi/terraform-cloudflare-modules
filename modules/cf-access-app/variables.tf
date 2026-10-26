@@ -14,9 +14,39 @@ variable "domain" {
 }
 
 variable "allowed_emails" {
-  description = "Email addresses allowed by the generated allow policy. Empty list disables the policy."
+  description = "Email addresses allowed by the generated allow policy. The policy is disabled when both email lists are empty."
   type        = list(string)
   default     = []
+}
+
+variable "allowed_email_domains" {
+  description = "Bare email domains allowed by the generated allow policy (e.g. example.com). Matches any listed email address OR domain."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition = alltrue([
+      for domain in var.allowed_email_domains :
+      try(
+        can(regex("^([A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?\\.)+[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$", domain)) &&
+        length(domain) <= 253 &&
+        alltrue([for label in split(".", domain) : length(label) <= 63]),
+        false,
+      )
+    ])
+    error_message = "allowed_email_domains must contain bare domains such as example.com, at most 253 characters with labels at most 63 characters, without wildcards, @, URLs, paths, or whitespace."
+  }
+}
+
+variable "required_login_method_id" {
+  description = "Identity provider ID required in addition to a matching email address or domain. Null adds no login-method requirement."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.required_login_method_id == null ? true : trimspace(var.required_login_method_id) != ""
+    error_message = "required_login_method_id must be null or a non-empty identity provider ID."
+  }
 }
 
 variable "allowed_idps" {
