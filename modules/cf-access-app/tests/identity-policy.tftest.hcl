@@ -81,9 +81,9 @@ run "required_identity_provider_is_an_and_requirement" {
 
   variables {
     allowed_email_domains     = ["o2csi.com"]
-    allowed_idps              = ["11111111-2222-3333-4444-555555555555"]
+    allowed_idps              = ["11111111-2222-3333-4444-555555555555", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"]
     required_login_method_id  = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-    auto_redirect_to_identity = true
+    auto_redirect_to_identity = false
   }
 
   assert {
@@ -93,9 +93,69 @@ run "required_identity_provider_is_an_and_requirement" {
       one(cloudflare_zero_trust_access_policy.this[0].include).email_domain.domain == "o2csi.com" &&
       one(cloudflare_zero_trust_access_policy.this[0].include).login_method == null &&
       toset(cloudflare_zero_trust_access_application.this.allowed_idps) == toset(var.allowed_idps) &&
-      cloudflare_zero_trust_access_application.this.auto_redirect_to_identity
+      !cloudflare_zero_trust_access_application.this.auto_redirect_to_identity
     )
     error_message = "The explicit required IdP must be in require; allowed_idps and redirect settings must remain application settings."
+  }
+}
+
+run "rejects_required_identity_provider_excluded_from_domain_app" {
+  command = plan
+
+  variables {
+    allowed_email_domains    = ["o2csi.com"]
+    allowed_idps             = ["11111111-2222-3333-4444-555555555555"]
+    required_login_method_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+  }
+
+  expect_failures = [var.allowed_idps]
+}
+
+run "rejects_required_identity_provider_excluded_from_email_app" {
+  command = plan
+
+  variables {
+    allowed_emails           = ["admin@example.invalid"]
+    allowed_idps             = ["11111111-2222-3333-4444-555555555555"]
+    required_login_method_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+  }
+
+  expect_failures = [var.allowed_idps]
+}
+
+run "empty_application_idps_allow_required_identity_provider" {
+  command = plan
+
+  variables {
+    allowed_email_domains    = ["o2csi.com"]
+    allowed_idps             = []
+    required_login_method_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+  }
+
+  assert {
+    condition = (
+      one(cloudflare_zero_trust_access_policy.this[0].require).login_method.id == var.required_login_method_id &&
+      length(cloudflare_zero_trust_access_application.this.allowed_idps) == 0
+    )
+    error_message = "An empty allowed_idps list must preserve all configured providers and the explicit policy requirement."
+  }
+}
+
+run "null_application_idps_allow_required_identity_provider" {
+  command = plan
+
+  variables {
+    allowed_email_domains    = ["o2csi.com"]
+    allowed_idps             = null
+    required_login_method_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+  }
+
+  assert {
+    condition = (
+      one(cloudflare_zero_trust_access_policy.this[0].require).login_method.id == var.required_login_method_id &&
+      cloudflare_zero_trust_access_application.this.allowed_idps == null
+    )
+    error_message = "A null allowed_idps input must remain unset on the application and preserve the explicit policy requirement."
   }
 }
 

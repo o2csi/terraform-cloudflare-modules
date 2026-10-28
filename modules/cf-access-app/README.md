@@ -8,6 +8,11 @@ Creates a `cloudflare_zero_trust_access_application` in the supplied `account_id
 
 `allowed_idps` selects the identity providers offered by the application; it does not add a policy login-method requirement. The module does not create identity providers. When both email lists are empty, the application has no allow policy, even if either identity provider setting is supplied.
 
+When a generated allow policy uses `required_login_method_id`, a non-empty
+`allowed_idps` list must include that provider. The application may offer other
+providers while the policy requires one of them. An empty list keeps all
+configured providers available; `null` leaves the application setting unset.
+
 ```hcl
 # This configuration uses illustrative values. Replace them before applying.
 module "access_app" {

@@ -53,6 +53,17 @@ variable "allowed_idps" {
   description = "List of Identity Provider IDs allowed on this app (e.g. Google Workspace IdP ID). Empty list = all configured IdPs."
   type        = list(string)
   default     = []
+
+  validation {
+    condition = (
+      !local.policy_enabled ? true :
+      var.required_login_method_id == null ? true :
+      var.allowed_idps == null ? true :
+      length(var.allowed_idps) == 0 ? true :
+      contains(var.allowed_idps, var.required_login_method_id)
+    )
+    error_message = "allowed_idps must include required_login_method_id when a generated allow policy is enabled."
+  }
 }
 
 variable "auto_redirect_to_identity" {
